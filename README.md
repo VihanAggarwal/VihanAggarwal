@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="./assets/name.svg" alt="Vihan Aggarwal" width="960">
+<img src="./assets/name.svg" alt="Vihan Aggarwal" width="880">
 
 </div>
 
