@@ -1,7 +1,7 @@
 From f05713e245d2cc93ce96cb7ce0a26f6ca960995b Mon Sep 17 00:00:00 2001
 From: Vihan Aggarwal <mooimacow1234567@gmail.com>
 Date: Tue, 6 Oct 2026 17:03:11 +0000
-Subject: [PATCH 2/2] Fork the canonical-mask builder before CUDA init instead
+Subject: [PATCH 2/4] Fork the canonical-mask builder before CUDA init instead
  of at the clock's start
 
 Record #350 forks rank 0 at t0, i.e. forks the whole warmed-up trainer: fork() copies its page

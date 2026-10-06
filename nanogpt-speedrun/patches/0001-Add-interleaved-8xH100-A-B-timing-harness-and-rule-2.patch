@@ -1,7 +1,7 @@
 From 4172ff2e439b50e209ffc6cdd6eb4dab49aeba23 Mon Sep 17 00:00:00 2001
 From: Vihan Aggarwal <mooimacow1234567@gmail.com>
 Date: Tue, 6 Oct 2026 16:51:37 +0000
-Subject: [PATCH 1/2] Add interleaved 8xH100 A/B timing harness and
+Subject: [PATCH 1/4] Add interleaved 8xH100 A/B timing harness and
  rule-2/rule-4 statistics
 
 tools/speedrun_ab/ab_bench.py runs two checkouts in an ABBA leg order on one node (optionally

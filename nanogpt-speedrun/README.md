@@ -20,6 +20,11 @@ git am /path/to/nanogpt-speedrun/patches/*.patch
 |---|---|---|---|
 | 0001 | `tools/speedrun_ab/`: interleaved ABBA A/B runner for one 8xH100 node, and rule-2/rule-4 statistics | tooling | reproduces ANVIL2's published baseline stats; 7 CPU tests |
 | 0002 | Fork the canonical-mask builder before CUDA init. It now waits on a pipe and starts its on-clock build at t0, instead of forking the warmed-up trainer at t0 | systems-only, mask byte-identical | 4 CPU tests; mock-trainer benchmark: first 25 steps 1.2-6.1 s with the late fork vs 0.15-0.21 s with the early fork, on this VM |
+| 0003 | Data loader: numpy BOS index (partial index 12.8 -> 1.7 ms on the step-0 critical path); `ScheduledBatches.close()` | systems-only, token stream byte-identical | the whole 1194-step schedule plus validation replayed through upstream's and this loader: identical batches on 2 ranks |
+| 0004 | Loader thread: step 0's first-shard read overlaps the prefix-table build at t0; the final validation's reads overlap the GPU drain; the training loader is closed first, so the val shard reuses a cached 256 MB pinned block instead of a fresh `cudaHostAlloc` | systems-only, same batches | CPU tests: loader close frees both shards with GC off; threaded val batches identical |
+
+All tests: `TIKTOKEN_CACHE_DIR=... python -m pytest tools -q` (16 pass). They need FineWeb-format shards
+(`SPEEDRUN_TEST_DATA`); synthetic shards in the same format work.
 
 ## Where the record's time goes (from its 17 published run logs)
 
