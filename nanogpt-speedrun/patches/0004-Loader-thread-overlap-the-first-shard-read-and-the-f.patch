@@ -1,7 +1,7 @@
 From 90284e03f279e2cd877c6693633943a61895c0b1 Mon Sep 17 00:00:00 2001
 From: Vihan Aggarwal <mooimacow1234567@gmail.com>
 Date: Tue, 6 Oct 2026 17:19:52 +0000
-Subject: [PATCH 4/6] Loader thread: overlap the first shard read and the final
+Subject: [PATCH 4/7] Loader thread: overlap the first shard read and the final
  validation's reads
 
 Both stay on the clock; they move off the main thread so the GPU is not idle under them.

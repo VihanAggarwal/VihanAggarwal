@@ -1,7 +1,7 @@
 From d925918a58ef79403ff96daac5a84cc464877c40 Mon Sep 17 00:00:00 2001
 From: Vihan Aggarwal <mooimacow1234567@gmail.com>
 Date: Tue, 6 Oct 2026 17:26:36 +0000
-Subject: [PATCH 6/6] tools/speedrun_ab: how to run the A/B comparison on one
+Subject: [PATCH 6/7] tools/speedrun_ab: how to run the A/B comparison on one
  8xH100 node
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>

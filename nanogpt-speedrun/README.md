@@ -6,6 +6,9 @@ record #92 (ANVIL2, 39.9 s on 8xH100). Base: upstream commit `4ea6b93`.
 **Status: not yet a record.** No change here has been timed on 8xH100. Every claim below comes
 from CPU tests and from the record's own published logs.
 
+**Fork:** [VihanAggarwal/modded-nanogpt @ claude/nanogpt-optimization-n49ur2](https://github.com/VihanAggarwal/modded-nanogpt/tree/claude/nanogpt-optimization-n49ur2)
+holds the same commits; the patches below mirror it.
+
 ## Apply
 
 ```bash
@@ -51,6 +54,12 @@ it at 40.90 s against 40.60 s for #360 on the same nodes. The baseline for rule 
 | #380/#381 exact-match retrieval | 21.5 s |
 
 These are ML changes. The systems patches here are orthogonal: #380 still forks at t0.
+
+## Testing on one GPU (Colab)
+
+Colab gives one GPU, and the speedrun needs 8xH100 in one node, so Colab cannot run or time a record.
+`tools/gpu_smoke/smoke_1gpu.py` checks the patches under real CUDA and times what they remove; see
+`tools/gpu_smoke/README.md` for the notebook cell.
 
 ## What a record needs (rules)
 
