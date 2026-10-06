@@ -1,7 +1,7 @@
 From 32f2984ab36aed3105dbe95482666790c083788c Mon Sep 17 00:00:00 2001
 From: Vihan Aggarwal <mooimacow1234567@gmail.com>
 Date: Tue, 6 Oct 2026 17:43:29 +0000
-Subject: [PATCH 7/7] tools/gpu_smoke: single-GPU smoke test of the systems
+Subject: [PATCH 07/10] tools/gpu_smoke: single-GPU smoke test of the systems
  patches (runs on Colab)
 
 Checks on one CUDA GPU what the CPU tests cannot: the loader with real pinned staging and CUDA events

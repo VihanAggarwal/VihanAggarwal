@@ -1,0 +1,66 @@
+From 5ad9083e7fe15b00c50be23ce98457e350fd467f Mon Sep 17 00:00:00 2001
+From: Vihan Aggarwal <mooimacow1234567@gmail.com>
+Date: Tue, 6 Oct 2026 20:40:30 +0000
+Subject: [PATCH 10/10] Start every rank's clock at once; a failed next-shard
+ load raises instead of hanging
+
+From the branch review:
+- Only rank 0 registers the mask buffer and runs the builder's --check (~0.3 s) before the clock, and
+  nothing synced the ranks before t0. Ranks 1-7 started their clocks first, so their first on-clock
+  loader work (the first shard's read, the background reads and scans) could run before rank 0's clock,
+  the one reported, started. A dist.barrier() before the pre-clock synchronize lines the clocks up (as
+  #367 does), and also cancels upstream's existing cudaHostRegister skew.
+- Shard.load_async left its ready event unset if the read failed, so the loader waited forever at the
+  shard switch; it now raises (pre-existing, next to this branch's _scan change).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_012PPV5QLVhMskk9KtGS5ApU
+---
+ track_1_short/data.py | 10 +++++++---
+ train_gpt.py          |  4 +++-
+ 2 files changed, 10 insertions(+), 4 deletions(-)
+
+diff --git a/track_1_short/data.py b/track_1_short/data.py
+index 91dbefb..8a77d94 100644
+--- a/track_1_short/data.py
++++ b/track_1_short/data.py
+@@ -177,14 +177,18 @@ class Shard:
+         result = {}
+         ready = threading.Event()
+         def load():
+-            tokens = _load_data_shard(file)
+-            result['shard'] = Shard(tokens, world_size)
+-            ready.set()
++            try:
++                tokens = _load_data_shard(file)
++                result['shard'] = Shard(tokens, world_size)
++            finally:
++                ready.set()  # also on failure: get() raises rather than waiting forever
+         thread = threading.Thread(target=load)
+         thread.start()
+         def get():
+             ready.wait()
+             thread.join()
++            if 'shard' not in result:
++                raise RuntimeError(f"loading {file} failed (traceback above)")
+             return result['shard']
+         return get
+ 
+diff --git a/train_gpt.py b/train_gpt.py
+index 55d4bc1..a83dff3 100644
+--- a/train_gpt.py
++++ b/train_gpt.py
+@@ -322,7 +322,9 @@ def main():
+     uncompiled_model.limit_yarn_rebuild(max_step_tokens)
+ 
+     training_time_ms = 0
+-    # start the clock
++    # start the clock, on every rank at once: rank 0 alone registers the mask buffer and checks the builder
++    # just before here, and the other ranks' first on-clock loader work must not start ahead of its clock
++    dist.barrier()
+     torch.cuda.synchronize()
+     t0 = time.perf_counter()
+     # The loader is lazy: its first fetch reads the first shard. Started now, it overlaps the table build.
+-- 
+2.43.0
+

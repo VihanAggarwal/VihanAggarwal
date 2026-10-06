@@ -7,28 +7,31 @@ record #92 (ANVIL2, 39.9 s on 8xH100). Base: upstream commit `4ea6b93`.
 from CPU tests and from the record's own published logs.
 
 **Fork:** [VihanAggarwal/modded-nanogpt @ claude/nanogpt-optimization-n49ur2](https://github.com/VihanAggarwal/modded-nanogpt/tree/claude/nanogpt-optimization-n49ur2)
-holds the same commits; the patches below mirror it.
+holds two layers:
 
-## Apply
+- **Systems layer**: the patches in `patches/` (apply with `git am` on upstream `4ea6b93`). These speedups change
+  no ML (rule-2 waiver): the canonical-mask builder is spawned instead of forked at the clock's start, the loader
+  overlaps the first-shard read and the final validation's reads, pinned blocks are reused, the BOS index uses
+  numpy, every rank starts its clock at a barrier, plus the A/B harness and tests. Token streams are
+  byte-identical (tested over the record's and the stack's schedules). Estimated 0.15-0.35 s, not yet measured.
+- **ML stack** (on the fork only): open PRs #375 (token-normalized n-gram hashes, Daniel Monroe) and #379 (CPLM
+  copy-sink pointer, NathanGodey) merged on top. #379 measured -4.6 s on its own; the combination is unmeasured
+  and needs its own p < 0.01 run pool.
+
+Tools on the fork:
+- `tools/speedrun_ab/`: interleaved 8xH100 A/B and sweeps.
+- `tools/retrieval_gate/`: the go/no-go test for stream-only retrieval, the only route the research found to -10 s.
+- `tools/proxy/`: a one-GPU (Colab) screen of 26 architecture and optimizer ideas.
+- `tools/gpu_smoke/`: a one-GPU check of the systems layer under real CUDA.
+- `tools/RULES_CHECK.md`: each layer against each rule.
+
+## Apply the systems layer
 
 ```bash
 git clone https://github.com/KellerJordan/modded-nanogpt && cd modded-nanogpt
 git checkout 4ea6b93
 git am /path/to/nanogpt-speedrun/patches/*.patch
 ```
-
-## Patches
-
-| # | change | kind | evidence so far |
-|---|---|---|---|
-| 0001 | `tools/speedrun_ab/`: interleaved ABBA A/B runner for one 8xH100 node, and rule-2/rule-4 statistics | tooling | reproduces ANVIL2's published baseline stats; 7 CPU tests |
-| 0002 | Spawn the canonical-mask builder (fresh interpreter, vfork+exec) at t0 instead of `os.fork()`-ing the warmed-up 8-GPU trainer there. All of the child's work stays on the clock | systems-only, mask byte-identical | 5 CPU tests; `start()` costs 0.5 ms vs 8.7 ms for fork with 2 GB touched, before any copy-on-write faults. A mock trainer's first 25 steps took 1.2-6.1 s after a late fork vs 0.15-0.21 s without one |
-| 0003 | Data loader: numpy BOS index (partial index 12.8 -> 1.7 ms on the step-0 critical path); `ScheduledBatches.close()` | systems-only, token stream byte-identical | the whole 1194-step schedule plus validation replayed through upstream's and this loader: identical batches on 2 ranks |
-| 0004 | Loader thread: step 0's first-shard read overlaps the prefix-table build at t0; the final validation's reads overlap the GPU drain; the training loader is closed first, so the val shard reuses a cached 256 MB pinned block instead of a fresh `cudaHostAlloc` | systems-only, same batches | CPU tests: loader close frees both shards with GC off; threaded val batches identical |
-| 0005 | Read only the first shard's 12 MB partial-index span before batch 0; the index thread reads the other 188 MB on the clock. Also: wait for the full index instead of silently skipping the rest of a shard if batches ever outrun the scan | systems-only, token stream byte-identical | first batch 34-50 ms -> 12.5-12.8 ms (CPU); the full-schedule replay passes with the wait path exercised |
-
-All tests: `TIKTOKEN_CACHE_DIR=... python -m pytest tools -q` (17 pass). They need FineWeb-format shards
-(`SPEEDRUN_TEST_DATA`); synthetic shards in the same format work.
 
 ## Where the record's time goes (from its 17 published run logs)
 
@@ -48,12 +51,16 @@ it at 40.90 s against 40.60 s for #360 on the same nodes. The baseline for rule 
 
 ## Upstream frontier (open PRs, not merged)
 
-| PR | claim |
-|---|---|
-| #379 CPLM | 36.0 s |
-| #380/#381 exact-match retrieval | 21.5 s |
+| PR | claim | note |
+|---|---|---|
+| #379 CPLM | 36.0 s (n=8, p=0.0005) | in the fork's ML stack |
+| #367 exact-match retrieval | 21.6 s | its validation index covers all 103 train shards, though a run trains on ~2 |
+| #380 exact-count chain (on #367) | 9.65 s | also counts over train shards the loader never reads |
+| #381 | no new measurement | |
 
-These are ML changes. The systems patches here are orthogonal: #380 still forks at t0.
+If maintainers accept the all-shard retrieval PRs, the record falls to ~9.65 s. `tools/retrieval_gate` measures
+how much of retrieval survives with a memory of only the trained-on tokens (the rule-safe version). The research
+puts a legitimate -10 s from 39.9 s at ~25% overall; it hinges on that gate.
 
 ## Testing on one GPU (Colab)
 

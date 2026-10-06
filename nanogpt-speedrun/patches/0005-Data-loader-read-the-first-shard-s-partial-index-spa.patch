@@ -1,7 +1,7 @@
 From d8ab27c88c5e38f29521c1282d4ff4e177fb71d9 Mon Sep 17 00:00:00 2001
 From: Vihan Aggarwal <mooimacow1234567@gmail.com>
 Date: Tue, 6 Oct 2026 17:23:42 +0000
-Subject: [PATCH 5/7] Data loader: read the first shard's partial-index span
+Subject: [PATCH 05/10] Data loader: read the first shard's partial-index span
  before the first batch, the rest after
 
 The timed run's first fetch read the whole 200 MB first shard before batch 0 (with all 8 ranks

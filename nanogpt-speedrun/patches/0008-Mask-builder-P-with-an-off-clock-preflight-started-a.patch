@@ -1,0 +1,425 @@
+From 4b652821dcbb74aaf8ca6440fbd56646424b5cd5 Mon Sep 17 00:00:00 2001
+From: Vihan Aggarwal <mooimacow1234567@gmail.com>
+Date: Tue, 6 Oct 2026 17:59:35 +0000
+Subject: [PATCH 08/10] Mask builder: -P with an off-clock preflight, started
+ at step 25; locked batch staging
+
+From an advisor review:
+- The builder ran under python -I, which drops PYTHONPATH: where the trainer's packages resolve only
+  through it (or the tokenizer is not in tiktoken's cache), the child would fail and rank 0 would
+  build the mask inline on the clock (+3-5 s). It now runs under -P (no script-directory imports,
+  the environment kept), and a --check run before the clock (imports, tokenizer) raises if it cannot.
+- The builder starts at step 25, still on the clock, once the loop is in steady state, so its CPU
+  work does not compete with the host-bound first steps. wait() starts it if a run never got there.
+- collect() drops the mapping instead of closing it, which raised BufferError if a view survived.
+- PinnedBatchStaging.upload takes a lock: the loader thread (step 0's fetch, the val reads) shares
+  the ring with the training loader.
+- A/B README: warm caches for systems A/Bs; the GPU smoke test also times launches during a fresh
+  pinned allocation, checks the val read reuses a training shard's block through close(), runs the
+  threaded fetch with the GPU busy, and reports the builder's spawn-to-done time and THP.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_012PPV5QLVhMskk9KtGS5ApU
+---
+ tools/gpu_smoke/smoke_1gpu.py            | 67 +++++++++++++++++++++---
+ tools/speedrun_ab/README.md              |  9 ++--
+ tools/tests/test_canonical_mask_spawn.py | 20 ++++++-
+ track_1_short/canonical_mask.py          | 39 +++++++++-----
+ track_1_short/canonical_mask_build.py    |  5 +-
+ track_1_short/perf/pinned_batches.py     | 28 +++++-----
+ train_gpt.py                             | 10 ++--
+ 7 files changed, 138 insertions(+), 40 deletions(-)
+
+diff --git a/tools/gpu_smoke/smoke_1gpu.py b/tools/gpu_smoke/smoke_1gpu.py
+index bb6725c..98f147f 100644
+--- a/tools/gpu_smoke/smoke_1gpu.py
++++ b/tools/gpu_smoke/smoke_1gpu.py
+@@ -92,9 +92,30 @@ def section_a_pinned_cache():
+     t0 = time.perf_counter()
+     again = torch.empty(n, dtype=torch.uint16, pin_memory=True)
+     reused = ms(t0)
+-    report("A. pinned cache reuses a freed 256 MB block", again.data_ptr() == ptr,
++    report("A1. pinned cache reuses a freed 256 MB block", again.data_ptr() == ptr,
+            f"fresh cudaHostAlloc {fresh:.1f} ms, reused {reused:.3f} ms (the val read's allocation, before/after)")
+     del again
++    # A fresh pinned allocation on another thread, while this thread launches kernels: does the driver
++    # hold up the launches (a second 256 MB-class block would be fresh: one is cached now, so 512 MB)?
++    x = torch.randn(4096, 4096, device="cuda", dtype=torch.bfloat16)
++    for _ in range(50):
++        x @ x
++    torch.cuda.synchronize()
++    done = []
++    worker = ThreadPoolExecutor(1)
++    alloc = worker.submit(lambda: (torch.empty(200_000_000, dtype=torch.uint16, pin_memory=True), done.append(1))[0])
++    gaps, last = [], time.perf_counter()
++    while not done:
++        x.add_(0)
++        now = time.perf_counter()
++        gaps.append(now - last)
++        last = now
++    block = alloc.result()
++    worker.shutdown()
++    torch.cuda.synchronize()
++    report("A2. launches during a fresh 512 MB pinned allocation on another thread", True,
++           f"{len(gaps)} launches, longest gap {1000 * max(gaps):.1f} ms (a stall here is what the val read paid)")
++    del block, x
+ 
+ 
+ def section_b_loader(data_dir: Path, device: torch.device):
+@@ -132,21 +153,51 @@ def section_b_loader(data_dir: Path, device: torch.device):
+                                                                        staging[0]), schedule, steps=range(steps))
+         new = branch.ScheduledBatches(branch.distributed_data_generator(train, first.batch_size, first.train_max_seq_len,
+                                                                         staging[1]), schedule, steps=range(steps))
++        exhausted = [0]
++        next_batch = branch.Shard._next_batch
++
++        def counting_next_batch(shard, *a):
++            try:
++                return next_batch(shard, *a)
++            except branch.PartialIndexExhausted:
++                exhausted[0] += 1
++                raise
++
++        branch.Shard._next_batch = counting_next_batch
+         loader_thread = ThreadPoolExecutor(1, initializer=torch.cuda.set_device, initargs=(device,))
+         t0 = time.perf_counter()
+         first_record = rec.peek(0)
+         record_first = ms(t0)
++        x = torch.randn(4096, 4096, device=device, dtype=torch.bfloat16)
+         t0 = time.perf_counter()
+-        first_new = loader_thread.submit(new.peek, 0).result()
++        first_new = loader_thread.submit(new.peek, 0)
++        for _ in range(100):  # the GPU busy on the main thread's stream while the loader thread uploads
++            x @ x
++        first_new = first_new.result()
+         new_first = ms(t0)
++        shard = new.loader.gi_frame.f_locals["shard"]
++        shard._ready.wait()
++        scan = ms(t0)
+         torch.cuda.synchronize()
++        del x
+         ok = same_batch(first_record, first_new)
+         for step in range(steps):
+             ok &= same_batch(rec.take(step), new.take(step))
+         torch.cuda.synchronize()
++        branch.Shard._next_batch = next_batch
+         report("B1. training batches identical (record loader on the main thread vs this branch, first fetch on "
+-               "the loader thread)", ok, f"first fetch {record_first:.1f} ms -> {new_first:.1f} ms")
++               "the loader thread)", ok, f"first fetch {record_first:.1f} ms -> {new_first:.1f} ms; first shard's "
++               f"tail read + full scan done {scan:.0f} ms after the fetch started; partial index outrun "
++               f"{exhausted[0]}x (back-to-back fetching; a paced run: 0)")
++        frame = new.loader.gi_frame.f_locals
++        train_blocks = {frame["tokens"].data_ptr(), frame["next_shard_getter"]().tokens.data_ptr()}
+         new.close()
++        val_it = branch.distributed_data_generator(str(data_dir / "fineweb_val_*.bin"), args.val_batch_size, -1,
++                                                   staging[1], align_to_bos=False)
++        next(val_it)
++        report("B2. after close(), the val shard's read reuses a training shard's pinned block",
++               val_it.gi_frame.f_locals["tokens"].data_ptr() in train_blocks)
++        val_it.close()
+ 
+         def read_val(module, stage):
+             it = module.distributed_data_generator(str(data_dir / "fineweb_val_*.bin"), args.val_batch_size, -1, stage,
+@@ -157,7 +208,7 @@ def section_b_loader(data_dir: Path, device: torch.device):
+         t0 = time.perf_counter()
+         val_new = loader_thread.submit(read_val, branch, staging[1]).result()
+         torch.cuda.synchronize()
+-        report("B2. val batches identical (read on the loader thread)",
++        report("B3. val batches identical (read on the loader thread)",
+                all(same_batch(a, b) for a, b in zip(val_record, val_new)), f"threaded val read {ms(t0):.1f} ms")
+         loader_thread.shutdown()
+     finally:
+@@ -174,6 +225,7 @@ def section_c_canonical_mask(device: torch.device):
+     t0 = time.perf_counter()
+     builder.start()
+     spawn = ms(t0)
++    started = t0
+     t0 = time.perf_counter()
+     pid = os.fork()
+     if pid == 0:
+@@ -182,6 +234,7 @@ def section_c_canonical_mask(device: torch.device):
+     os.waitpid(pid, 0)
+     del ballast
+     builder.wait()
++    built = ms(started)
+     out = torch.zeros(vocab, vocab // 8, dtype=torch.uint8, device=device)
+     t0 = time.perf_counter()
+     builder.collect(out)
+@@ -190,15 +243,17 @@ def section_c_canonical_mask(device: torch.device):
+     expected = build_canonical_mask(vocab)
+     report("C2. spawned build collected to the GPU equals the inline build",
+            np.array_equal(out.cpu().numpy(), expected) and not any("WARNING" in s for s in logs),
+-           f"start() {spawn:.2f} ms vs os.fork() {fork:.2f} ms (4 GB host + CUDA context); collect {collect:.1f} ms")
++           f"start() {spawn:.2f} ms vs os.fork() {fork:.2f} ms (4 GB host + CUDA context); spawn to built "
++           f"{built / 1000:.1f} s; collect {collect:.1f} ms")
+ 
+ 
+ def main():
+     assert torch.cuda.is_available(), "needs a CUDA GPU"
+     device = torch.device("cuda", 0)
+     torch.cuda.set_device(device)
++    thp = Path("/sys/kernel/mm/transparent_hugepage/enabled")
+     print(f"{torch.cuda.get_device_name(device)} | torch {torch.__version__} | CUDA {torch.version.cuda} | "
+-          f"{os.cpu_count()} CPUs", flush=True)
++          f"{os.cpu_count()} CPUs | THP {thp.read_text().strip() if thp.exists() else '?'}", flush=True)
+     os.environ.setdefault("MASTER_ADDR", "127.0.0.1")
+     os.environ.setdefault("MASTER_PORT", "29561")
+     dist.init_process_group("cuda:nccl,cpu:gloo", rank=0, world_size=1, device_id=device)
+diff --git a/tools/speedrun_ab/README.md b/tools/speedrun_ab/README.md
+index 91575b6..a994349 100644
+--- a/tools/speedrun_ab/README.md
++++ b/tools/speedrun_ab/README.md
+@@ -18,12 +18,15 @@ pip install -r cand/requirements.txt
+ ## Run
+ 
+ ```bash
+-python cand/tools/speedrun_ab/ab_bench.py --arm baseline=base --arm candidate=cand --legs 10 --cold \
++python cand/tools/speedrun_ab/ab_bench.py --arm baseline=base --arm candidate=cand --legs 10 \
+     --out ab_runs/$(date +%m%d_%H%M)
+ ```
+ 
+-- Each leg is one full `torchrun` run of about 8 minutes cold (7 minutes of compile), so 10 legs per arm take about 2.7 hours.
+-  Without `--cold` the arms reuse their compile caches and a leg takes about 1.5 minutes.
++- Warm caches (the default): each arm reuses its compile caches after its first leg, about 1.5 minutes
++  per leg, so 10 legs per arm take about 30 minutes. That is the right setting for a systems A/B: about 10
++  pairs resolve ~0.05 s (#379 measured the record at 40.575 +/- 0.024 s, n=13).
++- `--cold` gives every leg empty caches, as the ANVIL2 certification did. Each leg then takes about 8
++  minutes, 7 of them compiling.
+ - `--dry-run` prints the plan and the preflight checks (GPU count, driver, torch build, shards).
+ - The ledger (`ledger.jsonl`), every leg's stdout and run log, and `report.txt` land in `--out`.
+   `ab_stats.py --baseline 'ab_runs/X/baseline/*.txt' --candidate 'ab_runs/X/candidate/*.txt'` recomputes the report.
+diff --git a/tools/tests/test_canonical_mask_spawn.py b/tools/tests/test_canonical_mask_spawn.py
+index 666bd9a..ec72f90 100644
+--- a/tools/tests/test_canonical_mask_spawn.py
++++ b/tools/tests/test_canonical_mask_spawn.py
+@@ -75,7 +75,7 @@ def test_builder_imports_neither_torch_nor_the_trainer():
+     """The spawned interpreter's imports are on the clock: the build module must stay torch-free."""
+     code = (f"import sys; sys.path.insert(0, {str(ROOT / 'track_1_short')!r}); import canonical_mask_build; "
+             "print(sorted(m for m in sys.modules if m.split('.')[0] in ('torch', 'track_1_short', 'triton')))")
+-    out = subprocess.run([sys.executable, "-I", "-c", code], capture_output=True, text=True, check=True).stdout
++    out = subprocess.run([sys.executable, "-P", "-c", code], capture_output=True, text=True, check=True).stdout
+     assert out.strip() == "[]"
+ 
+ 
+@@ -86,9 +86,24 @@ def test_non_owner_spawns_nothing():
+     builder.wait()
+ 
+ 
+-def test_failed_build_falls_back_to_inline_build(reference_mask, gloo_group, monkeypatch):
++def test_preflight_fails_before_the_clock(monkeypatch):
+     monkeypatch.setattr(canonical_mask, "BUILD_SCRIPT", Path("/nonexistent/canonical_mask_build.py"))
++    with pytest.raises(RuntimeError, match="cannot run"):
++        make_builder()
++
++
++def test_wait_starts_a_builder_never_started(reference_mask, gloo_group):
++    """A run shorter than BUILD_START_STEP steps still gets its mask."""
+     builder = make_builder()
++    builder.wait()
++    out = torch.zeros(VOCAB, VOCAB // 8, dtype=torch.uint8)
++    builder.collect(out)
++    assert np.array_equal(out.numpy(), reference_mask)
++
++
++def test_failed_build_falls_back_to_inline_build(reference_mask, gloo_group, monkeypatch):
++    builder = make_builder()  # preflight passes; the build itself then fails
++    monkeypatch.setattr(canonical_mask, "BUILD_SCRIPT", Path("/nonexistent/canonical_mask_build.py"))
+     builder.start()
+     builder.wait()  # the interpreter exits 2 (no such script): build inline
+     assert any("building it inline" in line for line in builder.logged)
+@@ -104,6 +119,7 @@ def test_start_costs_the_trainer_little_at_any_size():
+     builder = make_builder()
+     started = time.perf_counter()
+     builder.start()
++    builder.start()  # idempotent
+     spawn_ms = 1000 * (time.perf_counter() - started)
+     builder.proc.kill()
+     builder.proc.wait()
+diff --git a/track_1_short/canonical_mask.py b/track_1_short/canonical_mask.py
+index 6d78484..9161038 100644
+--- a/track_1_short/canonical_mask.py
++++ b/track_1_short/canonical_mask.py
+@@ -19,6 +19,9 @@ from torch import Tensor
+ from track_1_short.canonical_mask_build import build_canonical_mask
+ 
+ BUILD_SCRIPT = Path(__file__).resolve().with_name("canonical_mask_build.py")
++# The builder starts at this step, on the clock: once the training loop is in steady state, so its CPU
++# work does not compete with the host-bound first steps.
++BUILD_START_STEP = 25
+ 
+ 
+ class BackgroundCanonicalMask:
+@@ -28,12 +31,12 @@ class BackgroundCanonicalMask:
+     and throttle the training loop's kernel launches. A separate process has its own interpreter and
+     only computes, writing the result into shared memory.
+ 
+-    The process is a fresh interpreter, spawned (vfork + exec) when the clock starts: its startup, its
+-    imports, the tokenizer load and the build all run on the clock, off the training loop's path.
+-    Record #350 forked the trainer itself there instead. fork() copies the page tables of the whole
+-    warmed-up 8-GPU process, and every page the trainer then writes takes a copy-on-write fault while
+-    the child lives, all on rank 0's launch path in the first steps, which every rank waits for at its
+-    next collective. A spawn costs the trainer the same fraction of a millisecond at any size.
++    The process is a fresh interpreter, spawned (vfork + exec) at step BUILD_START_STEP: its startup,
++    its imports, the tokenizer load and the build all run on the clock, off the training loop's path.
++    Record #350 forked the trainer itself at the clock's start instead. fork() copies the page tables of
++    the whole warmed-up 8-GPU process, and every page the trainer then writes takes a copy-on-write fault
++    while the child lives, all on rank 0's launch path, which every rank waits for at its next
++    collective. A spawn costs the trainer the same fraction of a millisecond at any size.
+     """
+ 
+     def __init__(self, vocab_size: int, owner: bool, print0):
+@@ -57,16 +60,28 @@ class BackgroundCanonicalMask:
+             if not self.pinned:
+                 print0(f"NOTE: could not page-lock the canonical mask buffer ({err}), "
+                        "so its copy to device will be slower", console=True)
++            # Before the clock: the builder's interpreter must import numpy and tiktoken and find the
++            # tokenizer, or the build would fall back to rank 0, inline and on the clock.
++            check = subprocess.run(self._command("--check"), capture_output=True, text=True, timeout=300)
++            if check.returncode:
++                raise RuntimeError(f"the canonical mask builder cannot run: {check.stderr.strip()}")
++        self.started = False
++
++    @staticmethod
++    def _command(*args: str) -> list[str]:
++        # -P: nothing beside the script shadows an import (the environment and site-packages still apply).
++        return [sys.executable, "-P", str(BUILD_SCRIPT), *args]
+ 
+     def start(self):
+-        """Spawn the builder. Called as the clock starts. -I: nothing beside the script shadows an import."""
+-        if self.buf is None:
++        """Spawn the builder (once). Called on the clock at step BUILD_START_STEP."""
++        if self.buf is None or self.started:
+             return
+-        self.proc = subprocess.Popen([sys.executable, "-I", str(BUILD_SCRIPT), str(self.fd), str(self.vocab_size)],
+-                                     pass_fds=(self.fd,))
++        self.started = True
++        self.proc = subprocess.Popen(self._command(str(self.fd), str(self.vocab_size)), pass_fds=(self.fd,))
+ 
+     def wait(self, timeout=60.0):
+         """Block until the mask is ready. Called from the timed region."""
++        self.start()  # a run shorter than BUILD_START_STEP steps
+         if self.proc is None:
+             return
+         try:
+@@ -88,6 +103,6 @@ class BackgroundCanonicalMask:
+                 torch.cuda.cudart().cudaHostUnregister(self.buf.data_ptr())
+         dist.broadcast(out, 0)
+         if self.buf is not None:
+-            self.buf = None
+-            self.map.close()
++            # Dropped, not closed: the mapping goes when its last view does.
++            self.buf = self.map = None
+             os.close(self.fd)
+diff --git a/track_1_short/canonical_mask_build.py b/track_1_short/canonical_mask_build.py
+index 61ff7cb..345dcb7 100644
+--- a/track_1_short/canonical_mask_build.py
++++ b/track_1_short/canonical_mask_build.py
+@@ -1,6 +1,6 @@
+ """The canonical-token mask (record #350), standalone: imports neither torch nor the trainer.
+ 
+-canonical_mask.py runs this file as its own process (`python -I canonical_mask_build.py FD VOCAB`)
++canonical_mask.py runs this file as its own process (`python -P canonical_mask_build.py FD VOCAB`)
+ to build the mask into the shared memory FD names, concurrently with training.
+ """
+ import mmap
+@@ -124,6 +124,9 @@ def build_canonical_mask(vocab_size: int, ranks: dict | None = None) -> np.ndarr
+ 
+ 
+ if __name__ == "__main__":
++    if sys.argv[1:] == ["--check"]:  # the trainer's preflight, before the clock
++        tiktoken.get_encoding("gpt2")
++        sys.exit(0)
+     fd, vocab_size = (int(arg) for arg in sys.argv[1:3])
+     out = np.frombuffer(mmap.mmap(fd, vocab_size * (vocab_size // 8)), dtype=np.uint8)
+     out[:] = build_canonical_mask(vocab_size).reshape(-1)
+diff --git a/track_1_short/perf/pinned_batches.py b/track_1_short/perf/pinned_batches.py
+index ad34ff2..d9da08f 100644
+--- a/track_1_short/perf/pinned_batches.py
++++ b/track_1_short/perf/pinned_batches.py
+@@ -16,6 +16,7 @@ One staging object serves the training and validation loaders (created once in m
+ Provenance: record #360 (ANVIL2): `_PinnedRing`, `_pinld_slot`, `_loader_pin_cap`, `_sgs_pinned_like`.
+ #360 guards its rings with the CUDA-graph run-ahead throttle; here each slot has its own event.
+ """
++import threading
+ from dataclasses import dataclass
+ 
+ import torch
+@@ -44,18 +45,21 @@ class PinnedBatchStaging:
+                                  torch.cuda.Event())
+                       for _ in range(PINNED_BATCH_SLOTS)]
+         self.next_slot = 0
++        # The training loader and train_gpt.py's loader thread (step 0's fetch, the val reads) share the ring.
++        self.lock = threading.Lock()
+ 
+     def upload(self, inputs: Tensor, targets: Tensor, cum_seqlens: Tensor, ngram_ids: Tensor) -> tuple[Tensor, ...]:
+         """Device copies of one batch's host tensors, through the next pinned slot."""
+-        slot = self.slots[self.next_slot]
+-        self.next_slot = (self.next_slot + 1) % PINNED_BATCH_SLOTS
+-        slot.uploaded.synchronize()
+-        out = []
+-        for host, buf in ((inputs, slot.inputs), (targets, slot.targets), (cum_seqlens, slot.cum_seqlens),
+-                          (ngram_ids, slot.ngram_ids)):
+-            n = host.numel()
+-            assert n <= buf.numel() and host.dtype == buf.dtype, f"batch tensor {host.dtype}[{n}] overflows its pinned slot"
+-            buf[:n].copy_(host)
+-            out.append(buf[:n].to(self.device, non_blocking=True))
+-        slot.uploaded.record()
+-        return tuple(out)
++        with self.lock:
++            slot = self.slots[self.next_slot]
++            self.next_slot = (self.next_slot + 1) % PINNED_BATCH_SLOTS
++            slot.uploaded.synchronize()
++            out = []
++            for host, buf in ((inputs, slot.inputs), (targets, slot.targets), (cum_seqlens, slot.cum_seqlens),
++                              (ngram_ids, slot.ngram_ids)):
++                n = host.numel()
++                assert n <= buf.numel() and host.dtype == buf.dtype, f"batch tensor {host.dtype}[{n}] overflows its pinned slot"
++                buf[:n].copy_(host)
++                out.append(buf[:n].to(self.device, non_blocking=True))
++            slot.uploaded.record()
++            return tuple(out)
+diff --git a/train_gpt.py b/train_gpt.py
+index 84c66a9..55d4bc1 100644
+--- a/train_gpt.py
++++ b/train_gpt.py
+@@ -31,7 +31,7 @@ import torch.distributed as dist
+ from torch import nn
+ 
+ # torch._inductor.config.coordinate_descent_tuning = True # we have banned this flag for new records because it causes compilation to take 30min
+-from track_1_short.canonical_mask import BackgroundCanonicalMask
++from track_1_short.canonical_mask import BUILD_START_STEP, BackgroundCanonicalMask
+ from track_1_short.config import (
+     LR_COOLDOWN_FRAC,
+     SPLIT_EMBED_STAGE,
+@@ -298,8 +298,9 @@ def main():
+ 
+     # The canonical mask is only needed by the final validation, so rank 0 builds it in a child
+     # process while we train, and model.canon_mask stays all-zero == no masking until then, which
+-    # is what the intermediate validations run with. Only the buffer is allocated here; the build
+-    # is started below the clock, so its whole cost -- not just its use -- lands in the timed region.
++    # is what the intermediate validations run with. Only the buffer is allocated (and the builder's
++    # interpreter checked) here; the build starts on the clock, at step BUILD_START_STEP, so its whole
++    # cost -- not just its use -- lands in the timed region.
+     canon_mask_builder = BackgroundCanonicalMask(model.vocab_size, owner=env.master_process, print0=print0)
+ 
+     # Loader work off the main thread, on the clock: step 0's batch (the first shard's read and index)
+@@ -324,7 +325,6 @@ def main():
+     # start the clock
+     torch.cuda.synchronize()
+     t0 = time.perf_counter()
+-    canon_mask_builder.start()
+     # The loader is lazy: its first fetch reads the first shard. Started now, it overlaps the table build.
+     first_batch = loader_thread.submit(batches.peek, 0)
+     # Prefix-token table build, inside the timed region. The tokenizer was loaded at import
+@@ -408,6 +408,8 @@ def main():
+             break
+ 
+         # --------------- TRAINING SECTION -----------------
++        if step == BUILD_START_STEP:
++            canon_mask_builder.start()  # the canonical mask's build, on the clock (canonical_mask.py)
+         train_step(training_manager, step_graphs, row_prefetch, sampled_softmax, batches, deferred_gathers,
+                    step, uncompiled_model.lm_head_f8_col, prefetch_next=step + 1 < training_schedule.total_steps)
+         tail_averages.tick(step)
+-- 
+2.43.0
+
