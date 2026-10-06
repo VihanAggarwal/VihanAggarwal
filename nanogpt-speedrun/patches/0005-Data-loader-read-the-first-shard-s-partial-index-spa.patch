@@ -1,0 +1,197 @@
+From 81b87e4a4218259ebc340223daf28e0d80bb0e9c Mon Sep 17 00:00:00 2001
+From: Vihan Aggarwal <mooimacow1234567@gmail.com>
+Date: Tue, 6 Oct 2026 17:23:42 +0000
+Subject: [PATCH 5/5] Data loader: read the first shard's partial-index span
+ before the first batch, the rest after
+
+The timed run's first fetch read the whole 200 MB first shard before batch 0 (with all 8 ranks
+reading the same file at once), although the first ~45 batches only use tokens below the
+partial index's 6M. That span (12 MB) is now read first; the index thread reads the remaining
+188 MB, still on the clock, before its full scan. First batch on CPU, with pre-faulted buffers
+standing in for the cached pinned blocks: 34-50 ms -> 12.5-12.8 ms.
+
+While on the partial index, a document must end at a BOS the index holds, so no token past it is
+read before it is loaded. A batch that would need more raises PartialIndexExhausted, and
+next_batch waits for the full index and builds it again. The record's loader instead read the
+end of the partial index as the end of the shard: a wrong document end, then a StopIteration
+that skipped the rest of the shard. Runs never get there (the host stays a few steps ahead of
+the GPU), but the stream is now the intended one even when batches outrun the scan.
+
+tools/tests/test_token_stream_identical.py runs this loader without help against the record's
+loader held to its intended stream: the whole 1194-step schedule and the validation identical,
+with the wait taken during the test.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_012PPV5QLVhMskk9KtGS5ApU
+---
+ tools/tests/test_token_stream_identical.py | 12 ++--
+ track_1_short/data.py                      | 73 +++++++++++++++++-----
+ 2 files changed, 63 insertions(+), 22 deletions(-)
+
+diff --git a/tools/tests/test_token_stream_identical.py b/tools/tests/test_token_stream_identical.py
+index 5646ffc..f6e9f54 100644
+--- a/tools/tests/test_token_stream_identical.py
++++ b/tools/tests/test_token_stream_identical.py
+@@ -63,10 +63,10 @@ def same_batch(a, b) -> bool:
+ 
+ def deterministic_index_switch(module, monkeypatch):
+     """A shard starts on a partial BOS index while a thread scans the whole shard. If batches outrun the
+-    scan, the loader reads the partial index's end as the shard's end and skips to the next shard. A
+-    real run cannot outrun it (the host runs at most a few steps ahead of 17 ms GPU steps: 6M tokens
+-    last >~0.6 s against a ~0.07-0.3 s scan), but this test fetches back to back, so both loaders wait
+-    for the scan here."""
++    scan, the record's loader reads the partial index's end as the shard's end and skips to the next
++    shard. A real run cannot outrun it (the host runs at most a few steps ahead of 17 ms GPU steps: 6M
++    tokens last >~0.6 s against a ~0.3 s scan), but this test fetches back to back, so the record's loader
++    waits for the scan here."""
+     switch = module.Shard._maybe_switch
+ 
+     def waiting_switch(self):
+@@ -93,7 +93,9 @@ def test_whole_schedule_and_validation_identical(monkeypatch, rank):
+     record = record_data_module()
+     for module in (record, new_data):
+         unpinned(module, monkeypatch)
+-        deterministic_index_switch(module, monkeypatch)
++    # The record's loader can only be compared on its intended stream (it must not outrun its scan); this
++    # branch's loader waits for the full index itself, so it runs as it would in the trainer.
++    deterministic_index_switch(record, monkeypatch)
+     monkeypatch.setattr(dist, "get_rank", lambda: rank)
+     monkeypatch.setattr(dist, "get_world_size", lambda: 8)
+     args = Hyperparameters()
+diff --git a/track_1_short/data.py b/track_1_short/data.py
+index 5520619..c832d41 100644
+--- a/track_1_short/data.py
++++ b/track_1_short/data.py
+@@ -46,17 +46,32 @@ def pread_parallel(fd: int, out: np.ndarray, offset: int, nbytes: int) -> int:
+         return sum(pool.map(read_range, edges, edges[1:]))
+ 
+ 
+-def _load_data_shard(file: Path):
++# Tokens the partial BOS index covers (Shard). The timed run's first shard reads only these before its
++# first batch; the index thread reads the rest, on the clock, before its full scan.
++PARTIAL_INDEX_TOKENS = 6_000_000
++
++
++def _load_data_shard(file: Path, head_tokens: int | None = None):
++    """The shard's tokens. With head_tokens, only the first head_tokens are read now, and the result is
++    (tokens, read_rest): read_rest() reads the remainder into the same buffer (None if nothing remains)."""
+     header = torch.from_file(str(file), False, 256, dtype=torch.int32) # header is 256 int32
+     assert header[0] == 20240520, "magic number mismatch in the data .bin file"
+     assert header[1] == 1, "unsupported version"
+     num_tokens = int(header[2]) # number of tokens (claimed)
+-    with file.open("rb", buffering=0) as f:
+-        tokens = torch.empty(num_tokens, dtype=torch.uint16, pin_memory=True) # avoid pin_memory copy by @YouJiacheng
+-        # straight into the array: avoids a bytes->array copy (@YouJiacheng)
+-        nbytes = pread_parallel(f.fileno(), tokens.numpy(), HEADER_BYTES, 2 * num_tokens)
+-        assert nbytes == 2 * num_tokens, "number of tokens read does not match header"
+-    return tokens
++    tokens = torch.empty(num_tokens, dtype=torch.uint16, pin_memory=True) # avoid pin_memory copy by @YouJiacheng
++
++    def read(lo: int, hi: int):
++        with file.open("rb", buffering=0) as f:
++            # straight into the array: avoids a bytes->array copy (@YouJiacheng)
++            nbytes = pread_parallel(f.fileno(), tokens[lo:hi].numpy(), HEADER_BYTES + 2 * lo, 2 * (hi - lo))
++            assert nbytes == 2 * (hi - lo), "number of tokens read does not match header"
++
++    if head_tokens is None:
++        read(0, num_tokens)
++        return tokens
++    head = min(head_tokens, num_tokens)
++    read(0, head)
++    return tokens, (lambda: read(head, num_tokens)) if head < num_tokens else None
+ 
+ BOS_ID = 50256
+ 
+@@ -79,8 +94,13 @@ def cu_seqlens_rows(tokens_per_rank: int) -> int:
+     so the compiled model and its CUDA graphs see one shape per batch size)."""
+     return TRAIN_MAX_NUM_DOCS.get(tokens_per_rank, next_multiple_of_n(tokens_per_rank // 300, n=128))
+ 
++class PartialIndexExhausted(Exception):
++    """A batch needs a BOS position past the partial index: wait for the full index and build it again."""
++
++
+ class Shard:
+-    def __init__(self, tokens: Tensor, world_size: int = 1):
++    def __init__(self, tokens: Tensor, world_size: int = 1, read_rest=None):
++        """read_rest: reads the tokens past PARTIAL_INDEX_TOKENS, if they are not read yet."""
+         self.tokens = tokens
+         self.size = tokens.numel()
+         self.world_size = world_size
+@@ -89,13 +109,15 @@ class Shard:
+         # Partial index now, full index async. numpy's flatnonzero gives the same ascending int64 indices
+         # as torch's nonzero, ~4x faster single-threaded (the partial index of the timed run's first
+         # shard is on the clock, ahead of step 0).
+-        self.bos_idx = np.flatnonzero(tokens.numpy()[:6_000_000] == BOS_ID)
++        self.bos_idx = np.flatnonzero(tokens.numpy()[:PARTIAL_INDEX_TOKENS] == BOS_ID)
+         self._full_idx = None
+         self._ready = threading.Event()
+-        self._loader_thread = threading.Thread(target=self._scan)
++        self._loader_thread = threading.Thread(target=self._scan, args=(read_rest,))
+         self._loader_thread.start()
+ 
+-    def _scan(self):
++    def _scan(self, read_rest):
++        if read_rest is not None:
++            read_rest()
+         self._full_idx = np.flatnonzero(self.tokens.numpy() == BOS_ID)
+         self._ready.set()
+ 
+@@ -107,7 +129,20 @@ class Shard:
+ 
+     def next_batch(self, num_tokens_local: int, max_seq_len: int):
+         self._maybe_switch()
+-        n = len(self.bos_idx)
++        try:
++            return self._next_batch(num_tokens_local, max_seq_len)
++        except PartialIndexExhausted:
++            # Only if the batches outrun the full scan (a run is paced far slower): wait, never skip.
++            self._ready.wait()
++            self._maybe_switch()
++            return self._next_batch(num_tokens_local, max_seq_len)
++
++    def _next_batch(self, num_tokens_local: int, max_seq_len: int):
++        bos_idx = self.bos_idx
++        # On the partial index a document's end must be a BOS it holds, never the end of the index:
++        # the tokens past PARTIAL_INDEX_TOKENS may not be read yet, and the next BOS may lie past it.
++        partial = bos_idx is not self._full_idx
++        n = len(bos_idx)
+         starts = [[] for _ in range(self.world_size)]
+         ends = [[] for _ in range(self.world_size)]
+ 
+@@ -115,12 +150,14 @@ class Shard:
+         for r in range(self.world_size):
+             cur_len = 0
+             while cur_len <= num_tokens_local:
+-                if idx >= n:
++                if idx + partial >= n:
++                    if partial:
++                        raise PartialIndexExhausted
+                     raise StopIteration("Insufficient BOS ahead; hit tail of shard.")
+-                cur = self.bos_idx[idx]
++                cur = bos_idx[idx]
+                 starts[r].append(cur)
+                 idx += 1
+-                end = min(self.bos_idx[idx] if idx < n else self.size,
++                end = min(bos_idx[idx] if idx < n else self.size,
+                           cur + max_seq_len,
+                           cur + num_tokens_local - cur_len + 1)
+                 ends[r].append(end)
+@@ -167,11 +204,13 @@ def distributed_data_generator(filename_pattern: str, num_tokens: int, max_seq_l
+         raise FileNotFoundError(f"No files found for pattern: {filename_pattern}")
+ 
+     file_iter = iter(files)  # Use itertools.cycle(files) for multi-epoch training
+-    tokens = _load_data_shard(next(file_iter))
+     if align_to_bos:
+-        shard = Shard(tokens, world_size)
++        # The first batches only read the partial index's span: read that now, the rest in the index thread.
++        tokens, read_rest = _load_data_shard(next(file_iter), head_tokens=PARTIAL_INDEX_TOKENS)
++        shard = Shard(tokens, world_size, read_rest)
+         next_shard_getter = Shard.load_async(next(file_iter), world_size)
+     else:
++        tokens = _load_data_shard(next(file_iter))
+         pos = 0  # for unaligned case
+ 
+     while True:
+-- 
+2.43.0
+

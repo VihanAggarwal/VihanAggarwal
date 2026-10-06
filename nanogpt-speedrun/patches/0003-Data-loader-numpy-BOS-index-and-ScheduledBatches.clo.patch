@@ -1,7 +1,7 @@
 From 422b636158d035e2036359269e91be72ff8fbadd Mon Sep 17 00:00:00 2001
 From: Vihan Aggarwal <mooimacow1234567@gmail.com>
 Date: Tue, 6 Oct 2026 17:19:52 +0000
-Subject: [PATCH 3/4] Data loader: numpy BOS index, and
+Subject: [PATCH 3/5] Data loader: numpy BOS index, and
  ScheduledBatches.close()
 
 The timed run's first shard builds its partial BOS index on the main thread before step 0, with

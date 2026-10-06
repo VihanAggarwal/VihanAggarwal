@@ -1,7 +1,7 @@
 From e38a6fc6a78cac78632caed42e0bed059442a2f5 Mon Sep 17 00:00:00 2001
 From: Vihan Aggarwal <mooimacow1234567@gmail.com>
 Date: Tue, 6 Oct 2026 17:19:52 +0000
-Subject: [PATCH 2/4] Spawn the canonical-mask builder at the clock's start
+Subject: [PATCH 2/5] Spawn the canonical-mask builder at the clock's start
  instead of forking the trainer
 
 Record #350 forks rank 0 at t0, i.e. forks the whole warmed-up 8-GPU trainer: fork() copies its
