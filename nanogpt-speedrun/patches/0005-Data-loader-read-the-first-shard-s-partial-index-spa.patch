@@ -1,7 +1,7 @@
-From 81b87e4a4218259ebc340223daf28e0d80bb0e9c Mon Sep 17 00:00:00 2001
+From d8ab27c88c5e38f29521c1282d4ff4e177fb71d9 Mon Sep 17 00:00:00 2001
 From: Vihan Aggarwal <mooimacow1234567@gmail.com>
 Date: Tue, 6 Oct 2026 17:23:42 +0000
-Subject: [PATCH 5/5] Data loader: read the first shard's partial-index span
+Subject: [PATCH 5/6] Data loader: read the first shard's partial-index span
  before the first batch, the rest after
 
 The timed run's first fetch read the whole 200 MB first shard before batch 0 (with all 8 ranks
@@ -24,12 +24,12 @@ with the wait taken during the test.
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_012PPV5QLVhMskk9KtGS5ApU
 ---
- tools/tests/test_token_stream_identical.py | 12 ++--
- track_1_short/data.py                      | 73 +++++++++++++++++-----
- 2 files changed, 63 insertions(+), 22 deletions(-)
+ tools/tests/test_token_stream_identical.py | 27 ++++++--
+ track_1_short/data.py                      | 81 +++++++++++++++++-----
+ 2 files changed, 84 insertions(+), 24 deletions(-)
 
 diff --git a/tools/tests/test_token_stream_identical.py b/tools/tests/test_token_stream_identical.py
-index 5646ffc..f6e9f54 100644
+index 5646ffc..93b7c67 100644
 --- a/tools/tests/test_token_stream_identical.py
 +++ b/tools/tests/test_token_stream_identical.py
 @@ -63,10 +63,10 @@ def same_batch(a, b) -> bool:
@@ -58,8 +58,27 @@ index 5646ffc..f6e9f54 100644
      monkeypatch.setattr(dist, "get_rank", lambda: rank)
      monkeypatch.setattr(dist, "get_world_size", lambda: 8)
      args = Hyperparameters()
+@@ -115,3 +117,18 @@ def test_whole_schedule_and_validation_identical(monkeypatch, rank):
+                       (m.distributed_data_generator(val, args.val_batch_size, -1, HostStaging(), align_to_bos=False)
+                        for m in (record, new_data))]):
+         assert same_batch(a, b), f"rank {rank}: a validation batch differs"
++
++
++def test_failed_background_read_raises_instead_of_hanging(monkeypatch):
++    unpinned(new_data, monkeypatch)
++    path = sorted((DATA / "data/fineweb10B").glob("fineweb_train_*.bin"))[0]
++    tokens, _ = new_data._load_data_shard(path, head_tokens=new_data.PARTIAL_INDEX_TOKENS)
++
++    def failing_read():
++        raise OSError("simulated short read")
++
++    shard = new_data.Shard(tokens, 8, failing_read)
++    shard._loader_thread.join()
++    shard.i = len(shard.bos_idx) - 2  # the next batch needs the full index
++    with pytest.raises(RuntimeError, match="background read or BOS scan failed"):
++        shard.next_batch(16384, 896)
 diff --git a/track_1_short/data.py b/track_1_short/data.py
-index 5520619..c832d41 100644
+index 5520619..91dbefb 100644
 --- a/track_1_short/data.py
 +++ b/track_1_short/data.py
 @@ -46,17 +46,32 @@ def pread_parallel(fd: int, out: np.ndarray, offset: int, nbytes: int) -> int:
@@ -117,7 +136,7 @@ index 5520619..c832d41 100644
          self.tokens = tokens
          self.size = tokens.numel()
          self.world_size = world_size
-@@ -89,13 +109,15 @@ class Shard:
+@@ -89,25 +109,44 @@ class Shard:
          # Partial index now, full index async. numpy's flatnonzero gives the same ascending int64 indices
          # as torch's nonzero, ~4x faster single-threaded (the partial index of the timed run's first
          # shard is on the clock, ahead of step 0).
@@ -130,13 +149,23 @@ index 5520619..c832d41 100644
          self._loader_thread.start()
  
 -    def _scan(self):
+-        self._full_idx = np.flatnonzero(self.tokens.numpy() == BOS_ID)
+-        self._ready.set()
 +    def _scan(self, read_rest):
-+        if read_rest is not None:
-+            read_rest()
-         self._full_idx = np.flatnonzero(self.tokens.numpy() == BOS_ID)
-         self._ready.set()
++        try:
++            if read_rest is not None:
++                read_rest()
++            self._full_idx = np.flatnonzero(self.tokens.numpy() == BOS_ID)
++        finally:
++            self._ready.set()  # also on failure: _maybe_switch raises rather than anyone waiting forever
  
-@@ -107,7 +129,20 @@ class Shard:
+     def _maybe_switch(self):
+         # Switch to full index as soon as async scan completes
+         if self.bos_idx is not self._full_idx and self._ready.is_set():
+             self._loader_thread.join()
++            if self._full_idx is None:
++                raise RuntimeError("the shard's background read or BOS scan failed (traceback above)")
+             self.bos_idx = self._full_idx
  
      def next_batch(self, num_tokens_local: int, max_seq_len: int):
          self._maybe_switch()
@@ -158,7 +187,7 @@ index 5520619..c832d41 100644
          starts = [[] for _ in range(self.world_size)]
          ends = [[] for _ in range(self.world_size)]
  
-@@ -115,12 +150,14 @@ class Shard:
+@@ -115,12 +154,14 @@ class Shard:
          for r in range(self.world_size):
              cur_len = 0
              while cur_len <= num_tokens_local:
@@ -176,7 +205,7 @@ index 5520619..c832d41 100644
                            cur + max_seq_len,
                            cur + num_tokens_local - cur_len + 1)
                  ends[r].append(end)
-@@ -167,11 +204,13 @@ def distributed_data_generator(filename_pattern: str, num_tokens: int, max_seq_l
+@@ -167,11 +208,13 @@ def distributed_data_generator(filename_pattern: str, num_tokens: int, max_seq_l
          raise FileNotFoundError(f"No files found for pattern: {filename_pattern}")
  
      file_iter = iter(files)  # Use itertools.cycle(files) for multi-epoch training
