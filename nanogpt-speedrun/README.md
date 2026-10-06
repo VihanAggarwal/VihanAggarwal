@@ -19,11 +19,11 @@ git am /path/to/nanogpt-speedrun/patches/*.patch
 | # | change | kind | evidence so far |
 |---|---|---|---|
 | 0001 | `tools/speedrun_ab/`: interleaved ABBA A/B runner for one 8xH100 node, and rule-2/rule-4 statistics | tooling | reproduces ANVIL2's published baseline stats; 7 CPU tests |
-| 0002 | Fork the canonical-mask builder before CUDA init. It now waits on a pipe and starts its on-clock build at t0, instead of forking the warmed-up trainer at t0 | systems-only, mask byte-identical | 4 CPU tests; mock-trainer benchmark: first 25 steps 1.2-6.1 s with the late fork vs 0.15-0.21 s with the early fork, on this VM |
+| 0002 | Spawn the canonical-mask builder (fresh interpreter, vfork+exec) at t0 instead of `os.fork()`-ing the warmed-up 8-GPU trainer there. All of the child's work stays on the clock | systems-only, mask byte-identical | 5 CPU tests; `start()` costs 0.5 ms vs 8.7 ms for fork with 2 GB touched, before any copy-on-write faults. A mock trainer's first 25 steps took 1.2-6.1 s after a late fork vs 0.15-0.21 s without one |
 | 0003 | Data loader: numpy BOS index (partial index 12.8 -> 1.7 ms on the step-0 critical path); `ScheduledBatches.close()` | systems-only, token stream byte-identical | the whole 1194-step schedule plus validation replayed through upstream's and this loader: identical batches on 2 ranks |
 | 0004 | Loader thread: step 0's first-shard read overlaps the prefix-table build at t0; the final validation's reads overlap the GPU drain; the training loader is closed first, so the val shard reuses a cached 256 MB pinned block instead of a fresh `cudaHostAlloc` | systems-only, same batches | CPU tests: loader close frees both shards with GC off; threaded val batches identical |
 
-All tests: `TIKTOKEN_CACHE_DIR=... python -m pytest tools -q` (16 pass). They need FineWeb-format shards
+All tests: `TIKTOKEN_CACHE_DIR=... python -m pytest tools -q` (17 pass). They need FineWeb-format shards
 (`SPEEDRUN_TEST_DATA`); synthetic shards in the same format work.
 
 ## Where the record's time goes (from its 17 published run logs)
@@ -37,6 +37,19 @@ All tests: `TIKTOKEN_CACHE_DIR=... python -m pytest tools -q` (16 pass). They ne
 
 The steady state of stage 0 is ~427 ms per 25 steps. So 130-600 ms of startup overhead lands in
 the first 25 steps, and it accounts for nearly all of the run-to-run wall variance.
+
+Those logs come from #360's original single-file trainer. The repo's current trainer (the
+`track_1_short` refactor, f380c1f) added canonical masking and its t0 fork. Its author measured
+it at 40.90 s against 40.60 s for #360 on the same nodes. The baseline for rule 4 is the current trainer.
+
+## Upstream frontier (open PRs, not merged)
+
+| PR | claim |
+|---|---|
+| #379 CPLM | 36.0 s |
+| #380/#381 exact-match retrieval | 21.5 s |
+
+These are ML changes. The systems patches here are orthogonal: #380 still forks at t0.
 
 ## What a record needs (rules)
 

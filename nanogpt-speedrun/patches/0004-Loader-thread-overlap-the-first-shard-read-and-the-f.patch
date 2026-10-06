@@ -1,6 +1,6 @@
-From 710883daa799109c71c72a39fa180f8e14954e18 Mon Sep 17 00:00:00 2001
+From 90284e03f279e2cd877c6693633943a61895c0b1 Mon Sep 17 00:00:00 2001
 From: Vihan Aggarwal <mooimacow1234567@gmail.com>
-Date: Tue, 6 Oct 2026 17:14:17 +0000
+Date: Tue, 6 Oct 2026 17:19:52 +0000
 Subject: [PATCH 4/4] Loader thread: overlap the first shard read and the final
  validation's reads
 
@@ -26,7 +26,7 @@ Claude-Session: https://claude.ai/code/session_012PPV5QLVhMskk9KtGS5ApU
  1 file changed, 26 insertions(+), 5 deletions(-)
 
 diff --git a/train_gpt.py b/train_gpt.py
-index 538bcc6..bc1d66d 100644
+index 56cb2c6..84c66a9 100644
 --- a/train_gpt.py
 +++ b/train_gpt.py
 @@ -19,6 +19,7 @@ code = read_source(sys.argv[0])
@@ -37,7 +37,7 @@ index 538bcc6..bc1d66d 100644
  
  import torch
  
-@@ -141,6 +142,13 @@ def main():
+@@ -135,6 +136,13 @@ def main():
      def val_loader():
          return distributed_data_generator(args.val_files, args.val_batch_size, -1, batch_staging, align_to_bos=False)
  
@@ -51,9 +51,9 @@ index 538bcc6..bc1d66d 100644
      training_schedule = TrainingSchedule(
          TRAINING_STAGES, args.num_scheduled_iterations, args.num_extension_iterations, device=env.device,
          cooldown_frac=LR_COOLDOWN_FRAC, split_embed_stage=SPLIT_EMBED_STAGE, ws_post_yarn_ext=WS_POST_YARN_EXT,
-@@ -301,6 +309,13 @@ def main():
-     assert canon_mask_builder.vocab_size == model.vocab_size
-     canon_mask_builder.page_lock(print0)
+@@ -294,6 +302,13 @@ def main():
+     # is started below the clock, so its whole cost -- not just its use -- lands in the timed region.
+     canon_mask_builder = BackgroundCanonicalMask(model.vocab_size, owner=env.master_process, print0=print0)
  
 +    # Loader work off the main thread, on the clock: step 0's batch (the first shard's read and index)
 +    # under the prefix-table build at the clock's start, and each validation's batches under the GPU
@@ -65,7 +65,7 @@ index 538bcc6..bc1d66d 100644
      # No cyclic GC inside the timed loop: a multi-ms generation-2 pause on one rank stalls every rank at
      # the next collective. What survives until now is frozen out of all future scans; the garbage the
      # loop makes is collected at each validation, with the clock stopped (record #360).
-@@ -317,6 +332,8 @@ def main():
+@@ -310,6 +325,8 @@ def main():
      torch.cuda.synchronize()
      t0 = time.perf_counter()
      canon_mask_builder.start()
@@ -74,7 +74,7 @@ index 538bcc6..bc1d66d 100644
      # Prefix-token table build, inside the timed region. The tokenizer was loaded at import
      # (get_encoding is cached in tiktoken's registry), so this pays only the table construction,
      # split across ranks: each builds one token bucket and the max over ranks is the whole table.
-@@ -325,12 +342,20 @@ def main():
+@@ -318,12 +335,20 @@ def main():
      dist.all_reduce(model.prefix_table, op=dist.ReduceOp.MAX)
      # The candidate build maps prefix targets on the host.
      sampled_softmax.set_prefix_table(model.prefix_table.cpu().numpy())
@@ -95,7 +95,7 @@ index 538bcc6..bc1d66d 100644
              # The deferred gathers land first: validation reads the banks and, at the last step, ships
              # into them.
              if last_step:
-@@ -354,11 +379,7 @@ def main():
+@@ -347,11 +372,7 @@ def main():
              # On the clock (record #360): the table has no replica, so reading the val batches and pulling
              # their n-gram rows is part of the run's cost. The cache holds one batch, so the untimed loop
              # below lands each batch's rows again (same routes, no new exchange) right before its forward.
