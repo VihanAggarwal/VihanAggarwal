@@ -1,0 +1,523 @@
+From 4172ff2e439b50e209ffc6cdd6eb4dab49aeba23 Mon Sep 17 00:00:00 2001
+From: Vihan Aggarwal <mooimacow1234567@gmail.com>
+Date: Tue, 6 Oct 2026 16:51:37 +0000
+Subject: [PATCH 1/2] Add interleaved 8xH100 A/B timing harness and
+ rule-2/rule-4 statistics
+
+tools/speedrun_ab/ab_bench.py runs two checkouts in an ABBA leg order on one node (optionally
+with cold compile caches per leg), keeps every leg in a ledger, and reports with ab_stats.py:
+one-sided t-test of mean val loss vs 3.28 (rule 2), Welch's test and 95% CI on the wall-time
+difference (rule 4), and a per-25-step-interval breakdown that localizes where time moved.
+Dependency-free Student-t; reproduces ANVIL2's published baseline statistics.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_012PPV5QLVhMskk9KtGS5ApU
+---
+ tools/speedrun_ab/ab_bench.py | 149 +++++++++++++++++++++++
+ tools/speedrun_ab/ab_stats.py | 218 ++++++++++++++++++++++++++++++++++
+ tools/speedrun_ab/test_ab.py  | 112 +++++++++++++++++
+ 3 files changed, 479 insertions(+)
+ create mode 100644 tools/speedrun_ab/ab_bench.py
+ create mode 100644 tools/speedrun_ab/ab_stats.py
+ create mode 100644 tools/speedrun_ab/test_ab.py
+
+diff --git a/tools/speedrun_ab/ab_bench.py b/tools/speedrun_ab/ab_bench.py
+new file mode 100644
+index 0000000..12a85a3
+--- /dev/null
++++ b/tools/speedrun_ab/ab_bench.py
+@@ -0,0 +1,149 @@
++"""Interleaved A/B timing runs of two speedrun checkouts on one 8xH100 node (rule 4: same hardware).
++
++Each arm is a directory holding a train_gpt.py (a git worktree of the baseline record, one of the
++candidate). Legs alternate in an ABBA pattern so slow drift of the node (thermals, a noisy neighbour,
++page cache) lands on both arms equally. Every leg is kept, crashed or not: all runs count.
++
++  python tools/speedrun_ab/ab_bench.py --arm baseline=../base --arm candidate=. --legs 10 --cold \
++      --out ab_runs/$(date +%m%d_%H%M)
++
++--cold gives every leg empty Inductor/Triton caches (the ANVIL2 certification convention), so the
++untimed compile reruns each leg; without it legs share the warm caches of their arm.
++The final report is tools/speedrun_ab/ab_stats.py over the two arms' logs (also runnable alone).
++"""
++import argparse
++import json
++import os
++import re
++import shlex
++import shutil
++import subprocess
++import sys
++import time
++from pathlib import Path
++
++sys.path.insert(0, str(Path(__file__).resolve().parent))
++import ab_stats  # noqa: E402
++
++LOG_PATH_RE = re.compile(r"^(logs/[0-9a-f-]+\.txt)\s*$")
++DEFAULT_COMMAND = "torchrun --standalone --nproc_per_node={nproc} train_gpt.py"
++
++
++def leg_order(arms: list[str], legs: int) -> list[str]:
++    """ABBA ABBA ... for two arms (round-robin, alternating direction, for more): `legs` runs per arm."""
++    order = []
++    for i in range(legs):
++        order += arms if i % 2 == 0 else arms[::-1]
++    return order
++
++
++def preflight(arm_dirs: dict[str, Path], data_path: str | None) -> list[str]:
++    """Advisory checks for what the record README says bites: GPU count, driver, torch build, data."""
++    notes = []
++    smi = shutil.which("nvidia-smi")
++    if smi is None:
++        notes.append("nvidia-smi not found: is this a GPU node?")
++    else:
++        out = subprocess.run([smi, "--query-gpu=name,driver_version", "--format=csv,noheader"],
++                             capture_output=True, text=True).stdout.strip().splitlines()
++        if len(out) != 8 or not all("H100" in line for line in out):
++            notes.append(f"expected 8 H100s, nvidia-smi lists {out}")
++        drivers = {line.split(",")[-1].strip() for line in out}
++        if any(int(d.split(".")[0]) < 580 for d in drivers if d.split(".")[0].isdigit()):
++            notes.append(f"driver {drivers} < 580: the record README measured a uniform ~35% slowdown below 580")
++    try:
++        import torch
++        if torch.__version__ != "2.10.0+cu128":
++            notes.append(f"torch {torch.__version__}, the record pins 2.10.0+cu128 (nightlies produced NaNs)")
++    except ImportError:
++        notes.append("torch is not importable from this python")
++    for name, arm in arm_dirs.items():
++        base = Path(data_path) if data_path else arm
++        shards = sorted((base / "data/fineweb10B").glob("fineweb_*_*.bin"))
++        if not any("val" in s.name for s in shards) or sum("train" in s.name for s in shards) < 4:
++            notes.append(f"{name}: expected the val shard and >= 4 train shards under {base / 'data/fineweb10B'} "
++                         "(python data/cached_fineweb10B.py 9)")
++    return notes
++
++
++def run_leg(index: int, arm: str, arm_dir: Path, command: str, env: dict[str, str], out: Path, cold: bool) -> dict:
++    leg_env = dict(os.environ, **env)
++    cache_root = None
++    if cold:
++        cache_root = out / "caches" / f"leg{index:03d}"
++        leg_env["TORCHINDUCTOR_CACHE_DIR"] = str(cache_root / "inductor")
++        leg_env["TRITON_CACHE_DIR"] = str(cache_root / "triton")
++    stdout_path = out / arm / f"leg{index:03d}.stdout"
++    stdout_path.parent.mkdir(parents=True, exist_ok=True)
++    started = time.time()
++    with open(stdout_path, "w") as sink:
++        proc = subprocess.run(shlex.split(command), cwd=arm_dir, env=leg_env, stdout=sink, stderr=subprocess.STDOUT)
++    record = dict(leg=index, arm=arm, exit_code=proc.returncode, started=started, seconds=round(time.time() - started, 1),
++                  stdout=str(stdout_path), log=None, wall_ms=None, val_loss=None)
++    with open(stdout_path, errors="replace") as f:
++        log_rel = next((m.group(1) for line in f if (m := LOG_PATH_RE.match(line))), None)
++    if log_rel is not None and (arm_dir / log_rel).exists():
++        kept = out / arm / Path(log_rel).name
++        shutil.copy(arm_dir / log_rel, kept)
++        record["log"] = str(kept)
++        run = ab_stats.parse_log(str(kept))
++        if run is not None:
++            record.update(wall_ms=run.wall_ms, val_loss=run.val_loss)
++    if cache_root is not None:
++        shutil.rmtree(cache_root, ignore_errors=True)
++    return record
++
++
++def main():
++    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
++    parser.add_argument("--arm", action="append", required=True, metavar="NAME=DIR",
++                        help="an arm and its checkout; pass twice, baseline first")
++    parser.add_argument("--legs", type=int, default=10, help="runs per arm")
++    parser.add_argument("--out", required=True, help="directory for stdout, logs and the ledger")
++    parser.add_argument("--cold", action="store_true", help="empty compile caches for every leg")
++    parser.add_argument("--env", action="append", default=[], metavar="KEY=VALUE", help="extra environment for every leg")
++    parser.add_argument("--nproc", type=int, default=8)
++    parser.add_argument("--command", default=DEFAULT_COMMAND, help="leg command, run in the arm's directory")
++    parser.add_argument("--data-path", default=None, help="DATA_PATH both arms read (default: each arm's own data/)")
++    parser.add_argument("--dry-run", action="store_true", help="print the plan and the preflight notes only")
++    args = parser.parse_args()
++
++    arm_dirs = {}
++    for spec in args.arm:
++        name, _, path = spec.partition("=")
++        arm_dirs[name] = Path(path).resolve()
++        assert (arm_dirs[name] / "train_gpt.py").exists() or args.command != DEFAULT_COMMAND, f"no train_gpt.py in {path}"
++    env = dict(kv.split("=", 1) for kv in args.env)
++    if args.data_path:
++        env["DATA_PATH"] = str(Path(args.data_path).resolve())
++    command = args.command.format(nproc=args.nproc)
++    order = leg_order(list(arm_dirs), args.legs)
++
++    for note in preflight(arm_dirs, args.data_path):
++        print(f"PREFLIGHT: {note}")
++    print(f"{len(order)} legs: {' '.join(order)}\ncommand: {command}\nenv: {env}  cold caches: {args.cold}")
++    if args.dry_run:
++        return
++
++    out = Path(args.out).resolve()
++    out.mkdir(parents=True, exist_ok=True)
++    with open(out / "ledger.jsonl", "a") as ledger:
++        for index, arm in enumerate(order):
++            record = run_leg(index, arm, arm_dirs[arm], command, env, out, args.cold)
++            ledger.write(json.dumps(record) + "\n")
++            ledger.flush()
++            print(f"leg {index:3d} {arm:>10}: exit {record['exit_code']}  wall {record['wall_ms']} ms  "
++                  f"val {record['val_loss']}  ({record['seconds']} s with compile)", flush=True)
++
++    names = list(arm_dirs)
++    if len(names) >= 2:
++        baseline, _ = ab_stats.load(str(out / names[0] / "*.txt"))
++        candidate, _ = ab_stats.load(str(out / names[1] / "*.txt"))
++        if len(baseline) >= 2 and len(candidate) >= 2:
++            report = ab_stats.report(baseline, candidate)
++            (out / "report.txt").write_text(report + "\n")
++            print(report)
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/tools/speedrun_ab/ab_stats.py b/tools/speedrun_ab/ab_stats.py
+new file mode 100644
+index 0000000..44e4b58
+--- /dev/null
++++ b/tools/speedrun_ab/ab_stats.py
+@@ -0,0 +1,218 @@
++"""Statistics for a speedrun A/B comparison: wall time, final val loss, and where the time moved.
++
++Reads the trainer's run logs (logs/<uuid>.txt; the lines `step:S/N train_time:Tms` and the final
++`step:N/N val_loss:V train_time:Tms`) for two arms and reports what the rules ask for:
++
++  rule 2  one-sided t-test that the arm's mean final val loss is below the 3.28 gate (p < 0.01);
++          waived for systems-only changes, which should instead show val indistinguishable from
++          the baseline (the two-sided Welch test on val below).
++  rule 4  faster than the prior record on the same hardware: Welch's t-test on wall time,
++          one-sided (candidate < baseline), with a 95% confidence interval on the difference.
++
++The per-interval table splits the wall into the logged 25-step intervals plus the final
++validation, so a gain (or a regression) can be pinned to the part of the run it came from.
++
++Dependency-free (no scipy on a stock speedrun node): the Student-t CDF is computed from the
++regularized incomplete beta function (Numerical Recipes' continued fraction).
++
++Usage:
++    python ab_stats.py --baseline 'runs/baseline/*.txt' --candidate 'runs/candidate/*.txt'
++"""
++import argparse
++import glob
++import math
++import re
++import statistics
++from dataclasses import dataclass, field
++
++GATE = 3.28
++STEP_RE = re.compile(r"^step:(\d+)/(\d+) (?:val_loss:([\d.]+) )?train_time:(\d+)ms")
++
++
++@dataclass
++class Run:
++    path: str
++    total_steps: int
++    wall_ms: int                      # train_time at the final validation
++    val_loss: float
++    step_ms: dict[int, int] = field(default_factory=dict)  # cumulative train_time at logged steps
++
++
++def parse_log(path: str) -> Run | None:
++    """The run's final validation and its cumulative step timings; None if the run did not finish."""
++    step_ms, final = {}, None
++    total = None
++    with open(path, errors="replace") as f:
++        for line in f:
++            m = STEP_RE.match(line)
++            if not m:
++                continue
++            step, total = int(m.group(1)), int(m.group(2))
++            if m.group(3) is not None:
++                if step == total:
++                    final = (int(m.group(4)), float(m.group(3)))
++            else:
++                step_ms[step] = int(m.group(4))
++    if final is None:
++        return None
++    return Run(path, total, final[0], final[1], step_ms)
++
++
++# ---------------------------------------------------------------- Student t, no scipy
++
++def _betacf(a: float, b: float, x: float) -> float:
++    """Continued fraction for the incomplete beta function (modified Lentz)."""
++    tiny, eps = 1e-300, 3e-16
++    qab, qap, qam = a + b, a + 1.0, a - 1.0
++    c, d = 1.0, 1.0 - qab * x / qap
++    d = 1.0 / (d if abs(d) > tiny else tiny)
++    h = d
++    for m in range(1, 1000):
++        m2 = 2 * m
++        aa = m * (b - m) * x / ((qam + m2) * (a + m2))
++        d = 1.0 + aa * d
++        d = 1.0 / (d if abs(d) > tiny else tiny)
++        c = 1.0 + aa / c
++        c = c if abs(c) > tiny else tiny
++        h *= d * c
++        aa = -(a + m) * (qab + m) * x / ((a + m2) * (qap + m2))
++        d = 1.0 + aa * d
++        d = 1.0 / (d if abs(d) > tiny else tiny)
++        c = 1.0 + aa / c
++        c = c if abs(c) > tiny else tiny
++        delta = d * c
++        h *= delta
++        if abs(delta - 1.0) < eps:
++            break
++    return h
++
++
++def betainc(a: float, b: float, x: float) -> float:
++    """Regularized incomplete beta I_x(a, b)."""
++    if x <= 0.0:
++        return 0.0
++    if x >= 1.0:
++        return 1.0
++    log_front = math.lgamma(a + b) - math.lgamma(a) - math.lgamma(b) + a * math.log(x) + b * math.log1p(-x)
++    if x < (a + 1.0) / (a + b + 2.0):
++        return math.exp(log_front) * _betacf(a, b, x) / a
++    return 1.0 - math.exp(log_front) * _betacf(b, a, 1.0 - x) / b
++
++
++def t_cdf(t: float, df: float) -> float:
++    """P(T <= t) for Student's t with df degrees of freedom."""
++    if math.isinf(t):
++        return 1.0 if t > 0 else 0.0
++    tail = 0.5 * betainc(df / 2.0, 0.5, df / (df + t * t))
++    return 1.0 - tail if t > 0 else tail
++
++
++def t_ppf(q: float, df: float) -> float:
++    """Inverse of t_cdf by bisection (only used for confidence intervals)."""
++    lo, hi = -1e3, 1e3
++    for _ in range(200):
++        mid = (lo + hi) / 2
++        if t_cdf(mid, df) < q:
++            lo = mid
++        else:
++            hi = mid
++    return (lo + hi) / 2
++
++
++def one_sample_less(xs: list[float], mu: float) -> tuple[float, float]:
++    """One-sided one-sample t-test of mean(xs) < mu: (t, p)."""
++    n = len(xs)
++    gap, sd = statistics.mean(xs) - mu, statistics.stdev(xs)
++    if sd == 0:  # identical runs (e.g. seeded): the sign of the gap decides
++        return math.copysign(math.inf, gap), 0.0 if gap < 0 else 1.0
++    t = gap / (sd / math.sqrt(n))
++    return t, t_cdf(t, n - 1)
++
++
++def welch(a: list[float], b: list[float]) -> tuple[float, float, float, float]:
++    """Welch's test of mean(a) - mean(b): (diff, t, df, standard error)."""
++    va, vb = statistics.variance(a) / len(a), statistics.variance(b) / len(b)
++    se = math.sqrt(va + vb)
++    diff = statistics.mean(a) - statistics.mean(b)
++    if se == 0:  # both arms constant
++        return diff, (math.copysign(math.inf, diff) if diff else 0.0), float(len(a) + len(b) - 2), 0.0
++    df = (va + vb) ** 2 / (va ** 2 / (len(a) - 1) + vb ** 2 / (len(b) - 1))
++    return diff, diff / se, df, se
++
++
++# ---------------------------------------------------------------- report
++
++def load(pattern: str) -> tuple[list[Run], list[str]]:
++    runs, unfinished = [], []
++    for path in sorted(glob.glob(pattern)):
++        run = parse_log(path)
++        (runs.append(run) if run is not None else unfinished.append(path))
++    return runs, unfinished
++
++
++def interval_means(runs: list[Run]) -> dict[tuple[int, int | str], float]:
++    """Mean ms of each logged interval (prev logged step -> step) over the runs, plus the final
++    validation's on-clock section as (last logged step, "val")."""
++    common = sorted(set.intersection(*(set(r.step_ms) for r in runs)))
++    out, prev = {}, 0
++    for step in common:
++        out[(prev, step)] = statistics.mean(r.step_ms[step] - r.step_ms.get(prev, 0) for r in runs)
++        prev = step
++    if prev:
++        out[(prev, "val")] = statistics.mean(r.wall_ms - r.step_ms[prev] for r in runs)
++    return out
++
++
++def describe(name: str, runs: list[Run]) -> list[str]:
++    walls = [r.wall_ms / 1000 for r in runs]
++    vals = [r.val_loss for r in runs]
++    lines = [f"{name}: n={len(runs)}  wall {statistics.mean(walls):.3f} +/- {statistics.stdev(walls):.3f} s  "
++             f"val {statistics.mean(vals):.5f} +/- {statistics.stdev(vals):.5f}  "
++             f"(runs above {GATE}: {sum(v > GATE for v in vals)})"]
++    t, p = one_sample_less(vals, GATE)
++    lines.append(f"  rule 2: one-sided t vs {GATE}: t={t:.2f}  p={p:.3g}  {'PASS' if p < 0.01 else 'FAIL'} (p < 0.01)")
++    return lines
++
++
++def report(baseline: list[Run], candidate: list[Run]) -> str:
++    lines = describe("baseline ", baseline) + describe("candidate", candidate)
++    wb = [r.wall_ms / 1000 for r in baseline]
++    wc = [r.wall_ms / 1000 for r in candidate]
++    diff, t, df, se = welch(wc, wb)
++    half = t_ppf(0.975, df) * se
++    lines.append(f"rule 4: wall candidate - baseline = {diff * 1000:+.1f} ms  (95% CI {1000 * (diff - half):+.1f} .. "
++                 f"{1000 * (diff + half):+.1f} ms, {100 * diff / statistics.mean(wb):+.2f}%)  "
++                 f"Welch t={t:.2f} df={df:.1f}  one-sided p(candidate faster)={t_cdf(t, df):.3g}")
++    vdiff, vt, vdf, _ = welch([r.val_loss for r in candidate], [r.val_loss for r in baseline])
++    p_two = 2 * min(t_cdf(vt, vdf), 1 - t_cdf(vt, vdf))
++    lines.append(f"val candidate - baseline = {vdiff * 1000:+.2f} millinats  (Welch two-sided p={p_two:.3g}; a systems-only "
++                 f"change should not move it)")
++    # Intervals only line up between arms that train the same number of steps.
++    if {r.total_steps for r in baseline} == {r.total_steps for r in candidate} and len({r.total_steps for r in baseline}) == 1:
++        ib, ic = interval_means(baseline), interval_means(candidate)
++        lines.append("")
++        lines.append("interval        baseline_ms  candidate_ms   delta_ms")
++        for key in (k for k in ib if k in ic):
++            label = f"{key[0]}-{key[1]}"
++            lines.append(f"{label:>13}  {ib[key]:11.1f}  {ic[key]:12.1f}  {ic[key] - ib[key]:+9.1f}")
++    else:
++        lines.append("(per-interval table skipped: the arms train different step counts)")
++    return "\n".join(lines)
++
++
++def main():
++    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
++    parser.add_argument("--baseline", required=True, help="glob of the baseline arm's run logs")
++    parser.add_argument("--candidate", required=True, help="glob of the candidate arm's run logs")
++    args = parser.parse_args()
++    baseline, b_bad = load(args.baseline)
++    candidate, c_bad = load(args.candidate)
++    for path in b_bad + c_bad:
++        print(f"NOTE: no final validation in {path} (crashed or unfinished run); all runs count, so investigate it")
++    if len(baseline) < 2 or len(candidate) < 2:
++        raise SystemExit("need at least two finished runs per arm")
++    print(report(baseline, candidate))
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/tools/speedrun_ab/test_ab.py b/tools/speedrun_ab/test_ab.py
+new file mode 100644
+index 0000000..21be13e
+--- /dev/null
++++ b/tools/speedrun_ab/test_ab.py
+@@ -0,0 +1,112 @@
++"""CPU tests for the A/B tooling: run `python -m pytest tools/speedrun_ab -q`."""
++import json
++import random
++import subprocess
++import sys
++from pathlib import Path
++
++import pytest
++
++sys.path.insert(0, str(Path(__file__).resolve().parent))
++import ab_bench  # noqa: E402
++import ab_stats  # noqa: E402
++
++RECORD = Path(__file__).resolve().parents[2] / "records/track_1_short/2026-08-30_ANVIL2"
++
++FAKE_TRAINER = '''
++import os, random, sys, uuid
++random.seed(os.environ.get("FAKE_SEED", "0") + str(uuid.uuid4()))
++step_ms = float(os.environ["FAKE_STEP_MS"])
++crash = os.environ.get("FAKE_CRASH") == "1"
++path = f"logs/{uuid.uuid4()}.txt"
++os.makedirs("logs", exist_ok=True)
++print(path)
++t = 0.0
++with open(path, "w") as f:
++    for step in range(25, 101, 25):
++        t += 25 * step_ms + random.gauss(0, 1)
++        print(f"step:{step}/100 train_time:{t:.0f}ms step_avg:{t/step:.2f}ms", file=f)
++    if crash:
++        sys.exit(3)
++    print(f"step:100/100 val_loss:{random.gauss(3.277, 0.001):.4f} train_time:{t + 200:.0f}ms step_avg:1ms", file=f)
++'''
++
++
++def test_stats_reproduce_published_record_numbers():
++    """ANVIL2's statistics.md: baseline (record #89) 73.889 +/- 0.137 s, val 3.2782777778 (n=9)."""
++    runs, bad = ab_stats.load(str(RECORD / "baseline/*.txt"))
++    assert not bad and len(runs) == 9
++    walls = [r.wall_ms / 1000 for r in runs]
++    assert abs(sum(walls) / 9 - 73.889) < 5e-4
++    assert abs(sum(r.val_loss for r in runs) / 9 - 3.2782777778) < 1e-9
++
++
++def test_t_distribution_against_known_values():
++    # Two-sided 95% critical values from standard t tables.
++    for df, crit in [(1, 12.706), (5, 2.571), (17, 2.110), (30, 2.042)]:
++        assert abs(ab_stats.t_ppf(0.975, df) - crit) < 1e-3
++    assert abs(ab_stats.t_cdf(0.0, 7) - 0.5) < 1e-12
++    # Normal limit.
++    assert abs(ab_stats.t_cdf(-1.959964, 1e7) - 0.025) < 1e-5
++
++
++def test_leg_order_is_abba():
++    assert ab_bench.leg_order(["a", "b"], 3) == ["a", "b", "b", "a", "a", "b"]
++
++
++@pytest.mark.parametrize("cold", [False, True])
++def test_bench_end_to_end_with_fake_trainer(tmp_path, cold):
++    arms = {}
++    for name in ("base", "cand"):
++        arms[name] = tmp_path / name
++        arms[name].mkdir()
++        (arms[name] / "fake.py").write_text(FAKE_TRAINER)
++    out = tmp_path / "out"
++    # The candidate's fake steps are 1 ms faster: 100 ms faster per run.
++    for name, step_ms in (("base", "10"), ("cand", "9")):
++        (arms[name] / "run.sh").write_text(f"FAKE_STEP_MS={step_ms} {sys.executable} fake.py\n")
++    cmd = [sys.executable, str(Path(ab_bench.__file__)), "--arm", f"base={arms['base']}", "--arm", f"cand={arms['cand']}",
++           "--legs", "4", "--out", str(out), "--command", "bash run.sh"] + (["--cold"] if cold else [])
++    result = subprocess.run(cmd, capture_output=True, text=True)
++    assert result.returncode == 0, result.stderr
++    ledger = [json.loads(line) for line in (out / "ledger.jsonl").read_text().splitlines()]
++    assert [r["arm"] for r in ledger] == ["base", "cand", "cand", "base", "base", "cand", "cand", "base"]
++    assert all(r["exit_code"] == 0 and r["val_loss"] is not None for r in ledger)
++    report = (out / "report.txt").read_text()
++    delta_ms = float(report.split("rule 4: wall candidate - baseline = ")[1].split(" ms")[0])
++    assert abs(delta_ms + 100) < 6, report
++    assert not (out / "caches").exists() or not any((out / "caches").iterdir())
++
++
++def test_bench_keeps_crashed_legs(tmp_path):
++    arm = tmp_path / "arm"
++    arm.mkdir()
++    (arm / "fake.py").write_text(FAKE_TRAINER)
++    (arm / "run.sh").write_text(f"FAKE_STEP_MS=10 FAKE_CRASH=1 {sys.executable} fake.py\n")
++    out = tmp_path / "out"
++    subprocess.run([sys.executable, str(Path(ab_bench.__file__)), "--arm", f"a={arm}", "--legs", "2", "--out", str(out),
++                    "--command", "bash run.sh"], check=True, capture_output=True)
++    ledger = [json.loads(line) for line in (out / "ledger.jsonl").read_text().splitlines()]
++    assert len(ledger) == 2 and all(r["exit_code"] == 3 and r["val_loss"] is None and r["log"] for r in ledger)
++    runs, unfinished = ab_stats.load(str(out / "a/*.txt"))
++    assert runs == [] and len(unfinished) == 2
++
++
++def test_interval_table_localizes_a_gain():
++    random.seed(1)
++
++    def fake_run(first_interval_ms):
++        r = ab_stats.Run("x", 100, 0, 3.277, {})
++        t = 0
++        for step, dt in zip((25, 50, 75, 100), (first_interval_ms, 400, 400, 400)):
++            t += dt + random.gauss(0, 1)
++            r.step_ms[step] = round(t)
++        r.wall_ms = round(t + 220)
++        return r
++
++    base = [fake_run(600) for _ in range(6)]
++    cand = [fake_run(450) for _ in range(6)]
++    report = ab_stats.report(base, cand)
++    first = next(line for line in report.splitlines() if line.strip().startswith("0-25"))
++    assert float(first.split()[-1]) < -140
++    assert "100-val" in report
+-- 
+2.43.0
+
