@@ -18,13 +18,11 @@ holds two layers:
   copy-sink pointer, NathanGodey) merged on top. #379 measured -4.6 s on its own; the combination is unmeasured
   and needs its own p < 0.01 run pool.
 
-- **Candidate: Canon layers** (Allen-Zhu 2025; on the fork behind `CANON_LAYERS`, off by default): a causal
-  4-tap per-channel conv with a residual on each attention and MLP input. No modded-nanogpt PR has tried it. On the
-  one-GPU proxy it was the biggest new win (-207 millinats alone, -48 / -92 on a stack of record techniques; 4 seeds,
-  20M tokens). The record already has the partial key offset (#169), smear and the n-gram table, which overlap it, so
-  the expected gain at record scale is ~5-20 millinats, worth ~0.5-3 s net if the conv is cheap. Round 3 of the proxy
-  (`tools/proxy/nanogpt_canon_screen.ipynb`) re-tests it on a record-like base; `tools/speedrun_ab/sweep_canon.sh`
-  measures it on 8xH100.
+- **Tried and dropped: Canon layers** (Allen-Zhu 2025; on the fork behind `CANON_LAYERS`, off by default): a causal
+  per-channel conv with a residual on each attention and MLP input. No modded-nanogpt PR had tried it. On the
+  one-GPU proxy it won big at 20M tokens (-207 millinats alone; -25 on a record-like base with the key offset), but
+  at 3x the training steps the gain reversed to +16 millinats (the change is p = 0.004). It speeds up early training,
+  then falls behind, and the record trains far longer. Results: `tools/proxy/README.md`.
 
 Tools on the fork:
 - `tools/speedrun_ab/`: interleaved 8xH100 A/B and sweeps (`sweep_stack.sh`, `sweep_canon.sh`).
