@@ -18,10 +18,18 @@ holds two layers:
   copy-sink pointer, NathanGodey) merged on top. #379 measured -4.6 s on its own; the combination is unmeasured
   and needs its own p < 0.01 run pool.
 
+- **Candidate: Canon layers** (Allen-Zhu 2025; on the fork behind `CANON_LAYERS`, off by default): a causal
+  4-tap per-channel conv with a residual on each attention and MLP input. No modded-nanogpt PR has tried it. On the
+  one-GPU proxy it was the biggest new win (-207 millinats alone, -48 / -92 on a stack of record techniques; 4 seeds,
+  20M tokens). The record already has the partial key offset (#169), smear and the n-gram table, which overlap it, so
+  the expected gain at record scale is ~5-20 millinats, worth ~0.5-3 s net if the conv is cheap. Round 3 of the proxy
+  (`tools/proxy/nanogpt_canon_screen.ipynb`) re-tests it on a record-like base; `tools/speedrun_ab/sweep_canon.sh`
+  measures it on 8xH100.
+
 Tools on the fork:
-- `tools/speedrun_ab/`: interleaved 8xH100 A/B and sweeps.
+- `tools/speedrun_ab/`: interleaved 8xH100 A/B and sweeps (`sweep_stack.sh`, `sweep_canon.sh`).
 - `tools/retrieval_gate/`: the go/no-go test for stream-only retrieval, the only route the research found to -10 s.
-- `tools/proxy/`: a one-GPU (Colab) screen of 26 architecture and optimizer ideas.
+- `tools/proxy/`: one-GPU (Colab) screens of architecture and optimizer ideas; self-contained notebooks.
 - `tools/gpu_smoke/`: a one-GPU check of the systems layer under real CUDA.
 - `tools/RULES_CHECK.md`: each layer against each rule.
 
