@@ -1,0 +1,4 @@
+# Screening probe: 24 tasks (12 from 2025, 12 new in 2026), every scene represented, no task that scores zero for
+# every known model, lengths spread from 3.6k to 18k steps. 2 held-out instances (public_test indices 10-11 = ids
+# 311-312) cost ~19 GPU-hours per candidate on a 4090-class GPU.
+0,1,5,6,10,12,17,22,31,40,42,45,56,59,63,72,76,77,82,83,85,89,91,96
