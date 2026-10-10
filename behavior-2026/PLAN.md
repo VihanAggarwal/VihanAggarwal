@@ -114,6 +114,29 @@ inference-time techniques that won 2025, and we run a flawless, compliant evalua
 **If the final run is not complete by Fri 12:00 UTC:** submit what is done. Missing rollouts count as zero, and
 partial submissions are allowed. A finished 900 beats an unfinished 1000.
 
+### Contingency: no public model is decent on the new tasks 50-99
+Tasks 50-99 are half the score, and only the 100-task models (A, C, D) were trained on them. Comet pt50 has seen
+none of them.
+- **If A is not granted and C and D both score below ~0.10 on the new half of the probe:** start per-task
+  fine-tunes on your own 80 GB GPUs.
+  - Pipeline: [JackLiu's 2026 trainer](https://github.com/JackLiu0406/behaviour-1k-2026-meta) (LeRobot v3 loader,
+    100-task tables), initialized from the public RLC 50-task checkpoint.
+  - Data: the 224-px re-encode `JackLiu0406/b1k-224x224-gop8-fixed`. Apply the seek fix noted in
+    `docs/RESEARCH.md`.
+  - Rena-Tian's public recipe is 10k steps at batch 16, about 9 h on one A100 per task. It gave 0.04-0.57 on new
+    tasks.
+- Spend the GPUs on the new tasks with the most predicates and the shortest demos, which have the cheapest partial
+  credit (e.g. 77 modem, 63 smoke detectors, 89 fax, 92 scanner, 90 composting).
+- Fold the results in through `routing.per_task`, at most a handful of tasks (image size).
+- Expected gain is about +0.02-0.04 overall. Worth it only if the GPUs would otherwise idle.
+
+**Wrapper variant to test on Monday.** Rendering native 224 RGB (`DefaultWrapper`) instead of full-res RGB-D
+makes the simulator about 1.8x faster, which saves about 40% of the final run's GPU-hours.
+- 2025 evidence is mixed: Comet lost on one task, RLC saw no difference. Zero-Shot Butlers got Comet's full 0.199
+  with what appears (from their videos) to be the default 224 wrapper.
+- Run the chosen policy on the probe with both wrappers. Switch only if the 224 Q is within noise (about 0.02)
+  **and** compute is the binding constraint.
+
 ## 5. Compute budget (RT-core GPU-hours)
 
 | stage | rollouts | GPU-h (approx.) |

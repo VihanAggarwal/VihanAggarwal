@@ -91,6 +91,15 @@ pages, or the leaderboard Space files. **UNVERIFIED** marks anything that could 
 - base velocity is robot-frame and real-valued; in the 2025 data it was about 0.
 - Comet orders the state with grippers last, as raw widths. RLC uses action order, with grippers mapped to [-1, 1].
 
+## Training data notes
+- `JackLiu0406/b1k-224x224-gop8-fixed` (MIT, 374 GB) is a 224-px re-encode of all 100 tasks (RGB only, no depth).
+  - Its `meta/info.json` still lists 720-px head and depth features; patch it before use.
+  - It uses open-GOP with B-frames: a seek to GOP positions 6-7 returns a frame 1-2 steps late (25% of frames).
+    LeRobot's PyAV path raises `FrameTimestampError` on those frames.
+  - Fix: seek at least 0.3 s early, then decode forward.
+- 2026 `observation.state[0:3]` is robot-frame base velocity (std ~0.11). Norm stats computed on 2025 data have
+  ~0.009 there, so recompute them or mask those dimensions.
+
 ## Compute facts
 - **Rendering needs RT cores.** A100/H100 cannot render BEHAVIOR scenes. Isaac Sim 5.1 needs driver >= 580.65.06;
   595.x has been reported to crash.
