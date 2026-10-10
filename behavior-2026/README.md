@@ -44,10 +44,12 @@ b1k26-score runs/smoke --per-task
 ## Tests
 
 ```bash
-pip install -e '.[test]' && python -m pytest
+pip install -e '.[test]' && python -m pytest      # torch (CPU) is needed for the evaluator-client tests
+bash scripts/smoke_local.sh                        # front server + fake worker + probe, full-res, chunked and not
 ```
 The tests run on CPU. They drive the server with **verbatim copies of the real evaluator clients** (v3.9.3-post2
 and the 2026/eval multi-port client), so protocol compatibility is checked against the code the organizers run.
+See "Testing" in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for what is covered and the measured latencies.
 
 ## License
 MIT. The vendored evaluator client code in `tests/vendor/` is from

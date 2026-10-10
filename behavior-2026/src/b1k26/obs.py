@@ -5,8 +5,11 @@ Input format (see b1k26.constants for key names): the evaluator sends one flatte
   batch dim N, e.g. proprio (N, 61) float32, RGB (N, H, W, 4) uint8, task_id (N, 1) int64.
 - 2026/eval multi-port (--policy-endpoints): one connection per environment, values unsqueezed to N = 1.
 - v3.9.2: unbatched values, proprio (61,), RGB (H, W, 4), task_id (1,).
-Arrays decoded by b1k26.protocol are read-only views over the message bytes; nothing here writes into them,
-and every array placed in an EnvObs is a fresh, writeable copy.
+Arrays decoded by b1k26.protocol are read-only views over the message bytes; nothing here writes into them.
+By default every array placed in an EnvObs is a fresh, writeable copy. The front server passes
+``copy_images=False``: uint8 camera images and depth maps then stay read-only views of the message (no per-step
+copy of the ~6.8 MB of full-resolution images and depth); images are only copied, resized and padded when a plan
+needs them (``prepare_images``).
 """
 
 from __future__ import annotations
@@ -30,7 +33,8 @@ _FP_GRID = 37
 class EnvObs:
     task_id: int  # from obs["task_id"] (shape (N,1) int64 on v3.9.3+, may be (1,) or scalar)
     proprio: np.ndarray  # (61,) float32
-    rgb: dict[str, np.ndarray]  # role -> (H, W, 3) uint8; only roles present in the message ("head" always)
+    rgb: dict[str, np.ndarray]  # role -> (H, W, 3) uint8; only roles present in the message ("head" always);
+    #                             read-only views of the message with split_batch(copy_images=False)
     depth: dict[str, np.ndarray] = field(default_factory=dict)  # role -> (H, W) float32, empty if not sent
     cam_rel_poses: np.ndarray | None = None  # (21,) float32
     fingerprint: bytes = b""  # cheap hash of proprio + task_id + strided image bytes
@@ -48,8 +52,23 @@ def _as_array(value: Any, key: str) -> np.ndarray:
     return arr
 
 
-def _to_rgb_uint8(img: np.ndarray, key: str) -> np.ndarray:
-    """(H, W, C) with C in {3, 4} (or (H, W) gray) -> new contiguous (H, W, 3) uint8 array."""
+def _compact_copy(img: np.ndarray) -> np.ndarray:
+    """New C-contiguous copy of an (..., C) image. Copying channel by channel is ~4x faster than
+    ``np.ascontiguousarray`` for the strided RGB view of an RGBA buffer (0.4 vs 1.8 ms at 720x720)."""
+    if img.flags.c_contiguous:
+        return img.copy()
+    out = np.empty(img.shape, dtype=img.dtype)
+    for c in range(img.shape[-1]):
+        out[..., c] = img[..., c]
+    return out
+
+
+def _to_rgb_uint8(img: np.ndarray, key: str, copy: bool = True) -> np.ndarray:
+    """(H, W, C) with C in {3, 4} (or (H, W) gray) -> (H, W, 3) uint8.
+
+    Returns a new contiguous array, except for uint8 input with ``copy=False``: then the result is a (strided,
+    possibly read-only) view that drops the alpha channel without copying.
+    """
     if img.ndim == 2:
         img = img[..., None]
     if img.ndim != 3 or img.shape[-1] not in (1, 3, 4):
@@ -58,7 +77,7 @@ def _to_rgb_uint8(img: np.ndarray, key: str) -> np.ndarray:
         img = np.repeat(img, 3, axis=-1)
     img = img[..., :3]  # drop alpha (RGBA from the simulator)
     if img.dtype == np.uint8:
-        return np.array(img, dtype=np.uint8, order="C", copy=True)
+        return _compact_copy(img) if copy else img
     if img.dtype.kind == "f":
         x = np.nan_to_num(img.astype(np.float32, copy=False), nan=0.0, posinf=0.0, neginf=0.0)
         # [0, 1] floats are the documented case; a float image with values clearly above 1 is taken as 0-255.
@@ -88,13 +107,18 @@ def _parse_task_ids(value: Any, n: int, batched: bool) -> list[int]:
     return ids
 
 
-def split_batch(msg: Mapping[str, Any], default_task_id: int | None = None) -> list[EnvObs]:
+def split_batch(msg: Mapping[str, Any], default_task_id: int | None = None, copy_images: bool = True
+                ) -> list[EnvObs]:
     """Split the evaluator's flattened obs dict into one EnvObs per environment.
 
     Batched (v3.9.3+, 2026/eval multi-port with N=1) and unbatched (v3.9.2, detected by proprio.ndim == 1)
     messages are both accepted. Unknown keys are ignored. Raises ValueError with a clear message when proprio
     or the head RGB image is missing or malformed, or when task_id is missing and no ``default_task_id`` is
     given. Never mutates the input arrays.
+
+    ``copy_images=False`` keeps uint8 RGB images and float32 depth maps as views of the input arrays (read-only
+    when the input came from b1k26.protocol) instead of copying them; values, shapes and fingerprints are
+    identical either way. proprio and cam_rel_poses are always copied (they are tiny).
     """
     if C.PROPRIO_KEY not in msg:
         raise ValueError(f"observation is missing {C.PROPRIO_KEY!r} (keys: {sorted(map(str, msg))[:12]})")
@@ -152,7 +176,7 @@ def split_batch(msg: Mapping[str, Any], default_task_id: int | None = None) -> l
     out: list[EnvObs] = []
     for b in range(n):
         p = np.array(proprio[b], dtype=np.float32, copy=True)
-        rgb = {role: _to_rgb_uint8(arr[b], C.rgb_key(role)) for role, arr in images.items()}
+        rgb = {role: _to_rgb_uint8(arr[b], C.rgb_key(role), copy=copy_images) for role, arr in images.items()}
         depth = {}
         for role, arr in depths.items():
             d = arr[b]
@@ -160,7 +184,10 @@ def split_batch(msg: Mapping[str, Any], default_task_id: int | None = None) -> l
                 if d.shape[-1] != 1:
                     raise ValueError(f"depth for {role} must be (H, W) or (H, W, 1), got {d.shape}")
                 d = d[..., 0]
-            depth[role] = np.array(d, dtype=np.float32, copy=True)
+            if copy_images:
+                depth[role] = np.array(d, dtype=np.float32, copy=True)
+            else:
+                depth[role] = d if d.dtype == np.float32 else d.astype(np.float32)
         cam_b = None if cam is None else np.array(cam[b], dtype=np.float32, copy=True).reshape(-1)
         env = EnvObs(task_id=task_ids[b], proprio=p, rgb=rgb, depth=depth, cam_rel_poses=cam_b)
         env.fingerprint = compute_fingerprint(env.task_id, env.proprio, env.rgb)
@@ -250,7 +277,8 @@ def prepare_images(
     """Resize-with-pad every camera of ``env`` to (size, size, 3) uint8.
 
     Roles missing from the observation (wrist cameras with a custom env wrapper) are filled with zeros so a
-    backend always receives every role in ``roles``. Returned arrays never alias ``env.rgb``.
+    backend always receives every role in ``roles``. Returned arrays are C-contiguous and never alias ``env.rgb``
+    (which may hold strided read-only views, see ``split_batch(copy_images=False)``).
     """
     out: dict[str, np.ndarray] = {}
     for role in roles:
@@ -258,8 +286,12 @@ def prepare_images(
         if img is None:
             out[role] = np.zeros((size, size, 3), dtype=np.uint8)
             continue
+        src = img
+        if not img.flags.c_contiguous:
+            img = _compact_copy(img)  # one compact copy (drops the alpha stride) before PIL sees it
         r = resize_with_pad(img, size, size, method)
-        out[role] = np.array(r, dtype=np.uint8, copy=True) if r is img else np.ascontiguousarray(r, dtype=np.uint8)
+        # r is src only when src was already contiguous and already (size, size): copy so we never alias env.rgb.
+        out[role] = np.array(r, dtype=np.uint8, copy=True) if r is src else np.ascontiguousarray(r, dtype=np.uint8)
     return out
 
 

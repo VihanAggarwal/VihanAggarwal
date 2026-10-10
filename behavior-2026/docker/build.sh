@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Stage the build context and build the policy image.
 #   bash docker/build.sh --config configs/final.yaml --ckpt /workspace/ckpt/jackliu_meta100 --ckpt /workspace/ckpt/comet_pt50 \
-#        --backends "pibehavior openpi_comet" --tag ghcr.io/<you>/b1k26-policy:final
+#        --backends "pibehavior-2026 openpi_comet" --tag ghcr.io/<you>/b1k26-policy:final
+# --backends takes env names of docker/install_envs.sh (openpi_comet openpi_b1k gr00t pibehavior-2025 pibehavior-2026);
+# the config must launch workers as /opt/envs/<name>/venv/bin/python (checked at build time by b1k26-serve --check).
 # Checkpoint dirs are hard-linked into the context when possible (same filesystem), so staging is fast.
 # In the config, refer to checkpoints as /ckpt/<basename of --ckpt>/...
 set -euo pipefail

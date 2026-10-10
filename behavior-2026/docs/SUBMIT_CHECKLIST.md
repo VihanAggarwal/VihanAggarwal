@@ -9,6 +9,11 @@ real one.
 - [ ] The Docker image is built from exactly that config and those checkpoints, and pushed. Record the digest:
       `docker inspect --format '{{index .RepoDigests 0}}' <tag>`.
 - [ ] The image passes `b1k26-probe --res full --chunk 20 --steps 500`, and `/healthz` turns 200 within 10 min.
+      Fuller check against the running container: `scripts/smoke_local.sh --no-start --ports 8000-8002 --chunk K`.
+- [ ] `/status` shows `engine.config_problems: []` (or every entry is understood) and the server log has no
+      `config check:` ERROR lines.
+- [ ] The README's `--replay-action-chunk-size K` is <= `execution.execute_steps` of every routed profile and divides
+      it (K > execute_steps pads with holds; a non-divisor drops planned actions every plan). K = 0 is always safe.
 - [ ] The image was tested once on an Ampere GPU in fp32 or with the XLA bf16 upcast path (Turing-safe settings),
       and on 1 real rollout.
 - [ ] The eval node image uses BEHAVIOR-1K `v3.9.3-post2` with the official wrapper

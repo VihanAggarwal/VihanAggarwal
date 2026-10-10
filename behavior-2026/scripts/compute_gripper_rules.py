@@ -21,14 +21,22 @@ Definitions (per task, per side):
 - An episode *closes* when it has a fully-closed run of at least ``--min-run-frames`` consecutive frames
   (default 3, i.e. 0.1 s at 30 Hz; filters single-frame contact glitches). Its first-closure frame ``f`` is the
   start of the first such run.
-- ``always_open`` when at most ``--always-open-max-frac`` of the episodes close (default 0.01 = 2 of 200
-  episodes). The tolerance absorbs rare operator mistakes; RLC's 2025 tables mark a side always-open in the same
-  spirit (see ``--compare-rlc``).
+- ``always_open`` when at most ``--always-open-max-frac`` of the episodes close (default 0.03 = 6 of 200
+  episodes). The tolerance absorbs rare operator mistakes. It is calibrated on RLC's 2025 hand tables, which mark
+  task 10 always-open on both sides although 4 and 6 of its 200 demos close fully (``--compare-rlc``).
+  Exception, also from RLC's tables (tasks 41 and 46, right gripper): when those rare closures all happen late
+  (first-closure progress >= ``--late-progress``, default 0.9), the side gets a ``min_progress`` gate from the
+  earliest closure instead of ``always_open``.
 - Otherwise ``min_progress`` = ``--progress-safety`` x the ``--percentile`` (default 1st) percentile of the
   per-episode first-closure progress, where progress is ``min(f / episode_length, f / human_mean_len)``. The
   runtime compares it with ``step / human_mean_len`` (see b1k26.corrections), so ``f / human_mean_len`` is the
-  matching scale and the minimum with ``f / length`` keeps short demos from raising the threshold. A
-  ``min_progress`` below ``--min-useful-progress`` is dropped (null), because it would almost never fire.
+  matching scale and the minimum with ``f / length`` keeps short demos from raising the threshold. The safety
+  factor (default 0.6) covers a policy that reaches the first closure faster than the fastest demos, e.g. with
+  26 -> 20 action compression (1.3x faster execution). A ``min_progress`` below ``--min-useful-progress``
+  (default 0.05) is dropped (null), because it would almost never fire.
+- Tasks 0-49 keep RLC's tables verbatim. Where RLC has a ``min_stage`` rule, the demo-derived ``min_progress``
+  is added as well (unless ``--no-rlc-progress``); b1k26.corrections uses it only when no stage is known,
+  so stage-tracking models behave exactly like RLC and stage-less models get a conservative fallback.
 
 Usage:
     python scripts/compute_gripper_rules.py stats --tasks 50-99 --stats-dir /tmp/gripper_stats
@@ -425,6 +433,11 @@ def derive_side_rule(summary: dict[str, Any], args: argparse.Namespace) -> dict[
     if summary["n_episodes"] == 0:
         return {"always_open": False, "min_stage": None, "min_progress": None}
     if summary["close_frac"] <= args.always_open_max_frac:
+        earliest = summary.get("first_close_progress_p00")
+        if earliest is not None and earliest >= args.late_progress:
+            # Rare but only late closures: gate by the earliest one (RLC used late min_stage gates here).
+            return {"always_open": False, "min_stage": None,
+                    "min_progress": round(args.progress_safety * earliest, 4)}
         return {"always_open": True, "min_stage": None, "min_progress": None}
     arr_key = f"first_close_progress_p{args.percentile:02d}"
     if arr_key in summary:
@@ -467,6 +480,9 @@ def build_rules(args: argparse.Namespace) -> tuple[dict[str, Any], dict[int, dic
             entry["source"] = "rlc2025"
             for side in ("left", "right"):
                 r = rlc_side_rule(tid, side)
+                if r is not None and r["min_stage"] is not None and tid in summaries and not args.no_rlc_progress:
+                    # Stage-less fallback for RLC's stage rules (used by b1k26 only when no stage is known).
+                    r["min_progress"] = derive_side_rule(summaries[tid][side], args)["min_progress"]
                 if r is not None:
                     entry[side] = r
             entry["exempt_right"] = tid in RLC_RIGHT_GRIPPER_ALWAYS_ALLOWED
@@ -490,9 +506,11 @@ def build_rules(args: argparse.Namespace) -> tuple[dict[str, Any], dict[int, dic
             "closed_sum_m": args.closed_sum_m,
             "min_run_frames": args.min_run_frames,
             "always_open_max_frac": args.always_open_max_frac,
+            "late_progress": args.late_progress,
             "percentile": args.percentile,
             "progress_safety": args.progress_safety,
             "min_useful_progress": args.min_useful_progress,
+            "rlc_progress_fallback": not args.no_rlc_progress,
             "progress_definition": "min(first_close_frame / episode_length, first_close_frame / human_mean_len); "
                                    "runtime progress = step / human_mean_len",
         },
@@ -514,7 +532,7 @@ def compare_rlc(summaries: dict[int, dict[str, Any]], args: argparse.Namespace) 
             rlc_kind = "exempt" if exempt else ("always_open" if rlc and rlc["always_open"] else
                                                 f"min_stage={rlc['min_stage']}" if rlc else "none")
             der_kind = "always_open" if derived["always_open"] else f"min_progress={derived['min_progress']}"
-            ok = (rlc_kind == "always_open") == derived["always_open"]
+            ok = (rlc_kind == "always_open") == derived["always_open"]  # same kind: always-open vs gated/free
             agree += ok
             total += 1
             rows.append(f"task {tid:2d} {side:5s}: RLC {rlc_kind:14s} | demos {der_kind:22s} | "
@@ -560,9 +578,12 @@ def main(argv: list[str] | None = None) -> int:
     pr = sub.add_parser("rules", parents=[common], help="build gripper_rules.json from cached statistics")
     pr.add_argument("--out", default=None, help=f"output path (e.g. {DEFAULT_RULES_PATH})")
     pr.add_argument("--min-run-frames", type=int, default=3)
-    pr.add_argument("--always-open-max-frac", type=float, default=0.01)
+    pr.add_argument("--always-open-max-frac", type=float, default=0.03)
+    pr.add_argument("--late-progress", type=float, default=0.9)
     pr.add_argument("--percentile", type=int, default=1, choices=(0, 1, 5, 25, 50))
-    pr.add_argument("--progress-safety", type=float, default=1.0)
+    pr.add_argument("--progress-safety", type=float, default=0.6)
+    pr.add_argument("--no-rlc-progress", action="store_true",
+                    help="do not add demo-derived min_progress to RLC's min_stage rules (tasks 0-49)")
     pr.add_argument("--min-useful-progress", type=float, default=0.05)
     pr.add_argument("--compare-rlc", action="store_true")
 

@@ -12,7 +12,7 @@ license = {text = "MIT"}
 dependencies = [
     "numpy>=1.24",
     "msgpack>=1.0",
-    "websockets>=13.0",
+    "websockets>=14.0",  # 13.x logs a traceback for every /healthz request
     "pyyaml>=6.0",
     "pillow>=9.0",
 ]
@@ -38,4 +38,7 @@ b1k26 = ["data/*.json", "data/*.jsonl"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-q"
+addopts = "-q -rs"
+# websockets >= 17 deprecates using sync connect() without a context manager, which the vendored evaluator clients
+# (tests/vendor, verbatim upstream code) and the half-open-connection tests do on purpose.
+filterwarnings = ["ignore:connect\\(\\) must be used as a context manager:DeprecationWarning"]

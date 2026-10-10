@@ -163,6 +163,13 @@ class GripperRules:
         return left, right
 
     @staticmethod
+    def _chunk_len(actions: np.ndarray) -> int:
+        shape = np.shape(actions)
+        if len(shape) == 3 and shape[0] == 1:  # (1, T, D) batch of one
+            return int(shape[1])
+        return int(shape[0]) if len(shape) >= 2 else 1
+
+    @staticmethod
     def _hold_chunk(state23: np.ndarray, n: int, open_sides: tuple[str, ...]) -> np.ndarray:
         hold = hold_from_state23(state23)
         for side in open_sides:
@@ -191,7 +198,7 @@ class GripperRules:
             return actions, False, corrected_stage
         logger.info("gripper correction (task 0 rule): stage %d -> %d, opening %s", stage, corrected_stage,
                     "+".join(open_sides))
-        return self._hold_chunk(s, len(actions), tuple(open_sides)), True, corrected_stage
+        return self._hold_chunk(s, self._chunk_len(actions), tuple(open_sides)), True, corrected_stage
 
     def apply_with_stage(
         self,
@@ -222,7 +229,7 @@ class GripperRules:
         sides = tuple(s for s, flag in (("left", left), ("right", right)) if flag)
         logger.info("gripper correction: task %d stage %s progress %s: opening %s", tid, stage,
                     None if progress is None else round(progress, 3), "+".join(sides))
-        return self._hold_chunk(state23, len(actions), sides), True, new_stage
+        return self._hold_chunk(state23, self._chunk_len(actions), sides), True, new_stage
 
     def apply(
         self,

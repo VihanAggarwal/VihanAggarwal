@@ -1,0 +1,81 @@
+# Organizers' pi0.5 baseline family (wensi-ai/openpi@behavior, config pi05_b1k):
+#   - Hoshipu/pi05-b1k100t-2026-lr2.5e5 ckpt-4000000 (pi0.5 trained on all 100 tasks of the 2026 demos) as default
+#   - the provided turning_on_radio baseline for task 0
+# Two pi0.5 workers share one 24 GB GPU (~7 GB of bf16 params each), hence mem_fraction 0.45.
+#
+# Setup (docs/BACKENDS.md#openpi_b1k):
+#   scripts/envs/openpi_b1k.sh --prefix /opt/envs/openpi_b1k
+#   hf download Hoshipu/pi05-b1k100t-2026-lr2.5e5 --include "ckpt-4000000/*" --local-dir /ckpt/hoshipu-100t
+#   gdown 1KojwNUz0HVwU3Ww2SVh3NKt-4asuI3y2 -O pi05TurningOnRadio.zip && unzip pi05TurningOnRadio.zip -d /ckpt/radio
+#
+# Worker kwargs are passed as one JSON object (--backend-kwargs) to
+# b1k26.backends.openpi_b1k.OpenPIB1KBackend(checkpoint=..., **kwargs); every key is optional.
+server:
+  host: 0.0.0.0
+  ports: "8000-8049"
+  health_requires_warm: true
+
+workers:
+  hoshipu_100t:
+    endpoint: ws://127.0.0.1:9201
+    launch:
+      - /opt/envs/openpi_b1k/venv/bin/python
+      - -m
+      - b1k26.worker
+      - --backend
+      - openpi_b1k
+      - --checkpoint
+      - /ckpt/hoshipu-100t/ckpt-4000000
+      - --port
+      - "9201"
+      - --backend-kwargs
+      # norm_stats_dir: these checkpoints keep norm_stats.json directly under assets/ (no asset-id sub-dir).
+      # gripper_state: auto -> "pm1" from the norm stats (gripper state in [-1, 1], not raw finger width).
+      # VERIFY on a GPU before screening: action_horizon (pi05_b1k uses 32; Hoshipu's 10-task card used 50) and
+      #   use_quantile_norm (null keeps pi05_b1k's z-score). Their training config is not published.
+      - '{"config_name": "pi05_b1k", "norm_stats_dir": "assets", "gripper_state": "auto", "action_horizon": 32, "use_quantile_norm": null, "num_steps": 10, "batched": true, "max_batch": 8, "mem_fraction": 0.45}'
+    startup_timeout_s: 900
+  radio_baseline:
+    endpoint: ws://127.0.0.1:9202
+    launch:
+      - /opt/envs/openpi_b1k/venv/bin/python
+      - -m
+      - b1k26.worker
+      - --backend
+      - openpi_b1k
+      - --checkpoint
+      - /ckpt/radio/pi05_turn_on_the_radio
+      - --port
+      - "9202"
+      - --backend-kwargs
+      # pi05_b1k already has repo_id/asset id "turning_on_radio", where this checkpoint keeps its norm stats
+      # (do NOT pass repo_id "behavior-1k/2026-challenge-demos" as the baselines page does).
+      - '{"config_name": "pi05_b1k", "num_steps": 10, "batched": false, "mem_fraction": 0.45}'
+    startup_timeout_s: 900
+
+profiles:
+  hoshipu100t:
+    worker: hoshipu_100t
+    image_size: 224
+    resize: bilinear_pad
+    mask_base_qvel: false         # trained on 2026 demos: robot-frame base velocity is in distribution
+    prompt: snake_case            # VERIFY: LeRobot prompt_from_task gives the snake_case task name for 2026 demos
+    execution: {execute_steps: 16, predicted_steps_to_use: 16, keep_for_inpaint: 0}
+    corrections: true
+    use_stage: false
+  radio:
+    worker: radio_baseline
+    image_size: 224
+    resize: bilinear_pad
+    mask_base_qvel: false
+    # Trained with the snake_case prompt (meta/tasks.parquet); the upstream server sends the long instruction
+    # (TASK_REGISTRY). Try "instruction" too: it is what the baselines page evaluated.
+    prompt: snake_case
+    execution: {execute_steps: 16, predicted_steps_to_use: 16, keep_for_inpaint: 0}   # baseline: --action_horizon 16
+    corrections: false            # reproduce the baseline first; enable once it matches
+    use_stage: false
+
+routing:
+  default: hoshipu100t
+  per_task:
+    turning_on_radio: radio

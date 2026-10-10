@@ -1,0 +1,87 @@
+# PiBehavior (RLC architecture: task/stage-conditioned pi0.5 with rolling inpainting), two forks / two envs:
+#   - meta100: JackLiu0406/meta-SFT-checkpoints meta100-1epoch/step139999 (gated; 100 tasks, 2026 data) as default
+#   - rlc2025: IliaLarchenko/behavior_submission checkpoint_1..4 (2025 1st place, tasks 0-49 only), routed per task
+#     exactly as RLC's task_checkpoint_mapping.json; one checkpoint resident at a time (swap on task change)
+# Each worker holds ~7.6 GB of bf16 params (+ activations), hence mem_fraction 0.45 for two workers on 24 GB.
+#
+# Setup (docs/BACKENDS.md#pibehavior):
+#   scripts/envs/pibehavior.sh --prefix /opt/envs/pibehavior-2026 --fork jackliu2026
+#   scripts/envs/pibehavior.sh --prefix /opt/envs/pibehavior-2025 --fork rlc2025
+#   hf download JackLiu0406/meta-SFT-checkpoints --include "meta100-1epoch/step139999/params/*" \
+#       "meta100-1epoch/step139999/assets/*" --local-dir /ckpt/meta-sft        # gated: request access first
+#   hf download IliaLarchenko/behavior_submission --local-dir /ckpt/rlc        # checkpoint_1..4 (~51 GB)
+#
+# Worker kwargs are one JSON object (--backend-kwargs) for
+# b1k26.backends.pibehavior.PiBehaviorBackend(checkpoint=..., **kwargs); every key is optional.
+# Replay chunks (--replay-action-chunk-size K): use K dividing execute_steps (20: K = 10 or 20), otherwise the engine
+# drops leftovers and the inpainting tail before each plan.
+server:
+  host: 0.0.0.0
+  ports: "8000-8049"
+  health_requires_warm: true
+
+workers:
+  meta100:
+    endpoint: ws://127.0.0.1:9301
+    launch:
+      - /opt/envs/pibehavior-2026/venv/bin/python
+      - -m
+      - b1k26.worker
+      - --backend
+      - pibehavior
+      - --checkpoint
+      - /ckpt/meta-sft/meta100-1epoch/step139999
+      - --port
+      - "9301"
+      - --backend-kwargs
+      # config_name: the fork's pi_behavior_b1k_fast (num_tasks=100 is read from the checkpoint's task table).
+      # num_steps 20 and warmup_inpaint_steps 4 (= execution.keep_for_inpaint) as in RLC's serve_b1k.py.
+      - '{"config_name": "pi_behavior_b1k_fast", "num_steps": 20, "warmup_inpaint_steps": 4, "mem_fraction": 0.45}'
+    startup_timeout_s: 1200
+  rlc2025:
+    endpoint: ws://127.0.0.1:9302
+    launch:
+      - /opt/envs/pibehavior-2025/venv/bin/python
+      - -m
+      - b1k26.worker
+      - --backend
+      - pibehavior
+      - --port
+      - "9302"
+      - --backend-kwargs
+      # RLC's task -> checkpoint table (README / task_checkpoint_mapping.json). warmup_all loads each of the four
+      # checkpoints once at startup (fails fast on a broken download) and leaves checkpoint_2 (task 0) resident.
+      - '{"task_checkpoint_mapping": {"checkpoints": {
+            "checkpoint_1": {"path": "/ckpt/rlc/checkpoint_1", "tasks": [2, 3, 5, 6, 10, 11, 13, 14, 15, 19, 23, 24, 25, 28, 29, 34, 42, 44, 47, 48]},
+            "checkpoint_2": {"path": "/ckpt/rlc/checkpoint_2", "tasks": [0, 1, 7, 8, 9, 12, 16, 17, 18, 20, 21, 22, 26, 30, 43, 45]},
+            "checkpoint_3": {"path": "/ckpt/rlc/checkpoint_3", "tasks": [4, 27, 31, 32, 33, 35, 36, 37, 38, 39, 41, 46, 49]},
+            "checkpoint_4": {"path": "/ckpt/rlc/checkpoint_4", "tasks": [40]}}},
+          "num_steps": 20, "max_resident": 1, "warmup_inpaint_steps": 4, "warmup_all": true, "mem_fraction": 0.45}'
+    startup_timeout_s: 1800
+
+profiles:
+  meta100:
+    worker: meta100
+    image_size: 224
+    resize: bilinear_pad
+    # Trained on 2026 robot-frame base velocity. VERIFY at load: the worker logs the checkpoint's state std[0:3]
+    # ("2026" convention ~0.1; "2025" ~0.01 means the 2025 stats were used and masking should be A/B-tested).
+    mask_base_qvel: false
+    prompt: snake_case            # unused: PiBehavior is conditioned on [task_id, stage] embeddings, not text
+    # RLC execution: 26 predicted actions compressed into 20 executed steps (base x1.3), 4 kept for inpainting.
+    execution: {execute_steps: 20, predicted_steps_to_use: 26, keep_for_inpaint: 4}
+    corrections: true
+    use_stage: true               # stage voting on the model's subtask logits (history 3, 2 votes)
+  rlc2025:
+    worker: rlc2025
+    image_size: 224
+    resize: bilinear_pad
+    mask_base_qvel: true          # 2025 demos have base_qvel ~0 (norm-stat std ~0.01); 2026 sends robot-frame velocity
+    prompt: snake_case
+    execution: {execute_steps: 20, predicted_steps_to_use: 26, keep_for_inpaint: 4}
+    corrections: true
+    use_stage: true
+
+routing:
+  default: meta100
+  per_task: {}                    # e.g. {make_microwave_popcorn: rlc2025} after screening; only tasks 0-49 for rlc2025

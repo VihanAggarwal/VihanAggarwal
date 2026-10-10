@@ -1,0 +1,83 @@
+# GR00T N1.7 family (wensi-ai/Isaac-GR00T@behavior, Gr00tPolicy used directly by the worker):
+#   - kmy17518/gr00t-n1.7-b1k-multitask checkpoint-238000 (all 100 tasks; LR not annealed, so screen a few late
+#     snapshots, e.g. 230000-238000) as default
+#   - the organizers' turning_on_radio baseline for task 0
+# Each GR00T worker holds ~6.9 GB of bf16 weights; two fit on one 24 GB GPU (torch does not preallocate).
+#
+# Setup (docs/BACKENDS.md#gr00t):
+#   HF_TOKEN=... scripts/envs/gr00t.sh --prefix /opt/envs/gr00t --download-backbone   # nvidia/Cosmos-Reason2-2B is gated
+#   hf download kmy17518/gr00t-n1.7-b1k-multitask --include "checkpoint-238000/*" --local-dir /ckpt/gr00t-multitask
+#   gdown 1OXNm3SPLvWOSJR1e8In6xHMHxOYDp789 -O radio_gr00t.zip && unzip radio_gr00t.zip -d /ckpt/gr00t-radio
+#     (6.4 GB; the zip's top folder is turning_on_radio_GR00T-checkpoint-150000/)
+#
+# Worker kwargs are one JSON object (--backend-kwargs) for
+# b1k26.backends.gr00t.Gr00tBackend(checkpoint=..., **kwargs); every key is optional.
+# On a Turing GPU (TITAN RTX, sm_75) "attn_implementation": "auto" switches to SDPA by itself; "dtype": "auto" would
+# also run in float32 there (bf16 elsewhere).
+server:
+  host: 0.0.0.0
+  ports: "8000-8049"
+  health_requires_warm: true
+
+workers:
+  gr00t_multitask:
+    endpoint: ws://127.0.0.1:9401
+    launch:
+      - /opt/envs/gr00t/venv/bin/python
+      - -m
+      - b1k26.worker
+      - --backend
+      - gr00t
+      - --checkpoint
+      - /ckpt/gr00t-multitask/checkpoint-238000
+      - --port
+      - "9401"
+      - --backend-kwargs
+      # prompt_style snake_case: the dataset task string the checkpoint was trained on (the upstream server sends a
+      # fixed "pick up the object ..." prompt instead).
+      - '{"device": "cuda", "prompt_style": "snake_case", "attn_implementation": "auto", "dtype": "bfloat16", "batched": true, "max_batch": 8, "seed": 0}'
+    env: {HF_HUB_OFFLINE: "1"}    # the backbone / processor files come from the HF cache (see --download-backbone)
+    startup_timeout_s: 900
+  gr00t_radio:
+    endpoint: ws://127.0.0.1:9402
+    launch:
+      - /opt/envs/gr00t/venv/bin/python
+      - -m
+      - b1k26.worker
+      - --backend
+      - gr00t
+      - --checkpoint
+      - /ckpt/gr00t-radio/turning_on_radio_GR00T-checkpoint-150000
+      - --port
+      - "9402"
+      - --backend-kwargs
+      - '{"device": "cuda", "prompt_style": "snake_case", "attn_implementation": "auto", "dtype": "bfloat16", "seed": 0}'
+    env: {HF_HUB_OFFLINE: "1"}
+    startup_timeout_s: 900
+
+profiles:
+  gr00t:
+    worker: gr00t_multitask
+    image_size: 224               # the upstream wrapper's obs_size; the processor resizes to 256 itself
+    resize: bilinear_pad
+    mask_base_qvel: false         # trained on the 2026 demos (robot-frame base velocity, std ~0.07-0.14)
+    prompt: snake_case            # the backend derives the prompt from task_id (prompt_style), so this is informational
+    # Receding horizon over the 16-step chunk (no inpainting, no stages). The upstream default is temporal
+    # ensembling with one inference per step; A/B execute_steps 8 if the 16-step open loop is too long.
+    execution: {execute_steps: 16, predicted_steps_to_use: 16, keep_for_inpaint: 0}
+    corrections: true
+    use_stage: false
+  gr00t_radio:
+    worker: gr00t_radio
+    image_size: 224
+    resize: bilinear_pad
+    mask_base_qvel: false
+    prompt: snake_case
+    execution: {execute_steps: 16, predicted_steps_to_use: 16, keep_for_inpaint: 0}
+    corrections: false            # reproduce the baseline first
+    use_stage: false
+
+routing:
+  default: gr00t
+  per_task:
+    turning_on_radio: gr00t_radio

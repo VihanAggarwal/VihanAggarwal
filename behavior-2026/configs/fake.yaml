@@ -1,0 +1,40 @@
+# Fake policy for tests, local smoke runs and the Docker smoke test: the front server launches one fake_sine
+# worker (deterministic small motion around the current pose, no GPU, no checkpoint) and serves it on 8000-8049.
+#
+#   b1k26-serve --config configs/fake.yaml --ports 8000
+#   b1k26-probe --port 8000 --steps 200 --res full --chunk 20
+#
+# "{python}" is the front server's interpreter and "{port}" the worker port below.
+server:
+  host: 0.0.0.0
+  ports: "8000-8049"
+  health_requires_warm: true
+
+engine:
+  plan_timeout_s: 30
+  max_batch: 8
+  batch_wait_ms: 3
+
+workers:
+  fake:
+    port: 9100
+    launch: ["{python}", "-m", "b1k26.worker", "--backend", "fake_sine", "--port", "{port}",
+             "--backend-arg", "horizon=32", "--backend-arg", "period=48"]
+    startup_timeout_s: 60
+    max_restarts: 3           # restarts within any restart_window_s; a crash loop gives up, a rare crash never does
+    restart_window_s: 3600
+
+profiles:
+  fake:
+    worker: fake
+    image_size: 224
+    resize: bilinear_pad
+    mask_base_qvel: false
+    prompt: instruction
+    execution: {execute_steps: 20, predicted_steps_to_use: 26, keep_for_inpaint: 4}
+    corrections: true
+    use_stage: false
+
+routing:
+  default: fake
+  per_task: {}

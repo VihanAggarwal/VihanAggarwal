@@ -1,0 +1,3154 @@
+{
+ "schema": "b1k26 gripper rules v1 (see b1k26/corrections.py and scripts/compute_gripper_rules.py)",
+ "closed_threshold": -0.98,
+ "params": {
+  "dataset": "behavior-1k/2026-challenge-demos@4f50b44796641a4d526a19d9aeadc8aa51e2f2c2",
+  "closed_sum_m": 0.001,
+  "min_run_frames": 3,
+  "always_open_max_frac": 0.03,
+  "late_progress": 0.9,
+  "percentile": 1,
+  "progress_safety": 0.6,
+  "min_useful_progress": 0.05,
+  "rlc_progress_fallback": true,
+  "progress_definition": "min(first_close_frame / episode_length, first_close_frame / human_mean_len); runtime progress = step / human_mean_len"
+ },
+ "tasks": {
+  "0": {
+   "name": "turning_on_radio",
+   "source": "rlc2025",
+   "left": {
+    "always_open": false,
+    "min_stage": 2,
+    "min_progress": 0.1746
+   },
+   "right": {
+    "always_open": false,
+    "min_stage": 2,
+    "min_progress": 0.3232
+   },
+   "exempt_right": false,
+   "rlc_task0_rule": true,
+   "demo_stats": {
+    "left": {
+     "n_episodes": 200,
+     "n_closing": 191,
+     "n_any_closed_frame": 191,
+     "close_frac": 0.955,
+     "first_close_progress_p00": 0.2424,
+     "first_close_progress_p01": 0.291,
+     "first_close_progress_p05": 0.3438,
+     "first_close_progress_p25": 0.5082,
+     "first_close_progress_p50": 0.5982
+    },
+    "right": {
+     "n_episodes": 200,
+     "n_closing": 9,
+     "n_any_closed_frame": 9,
+     "close_frac": 0.045,
+     "first_close_progress_p00": 0.5351,
+     "first_close_progress_p01": 0.5387,
+     "first_close_progress_p05": 0.5533,
+     "first_close_progress_p25": 0.601,
+     "first_close_progress_p50": 0.6559
+    }
+   }
+  },
+  "1": {
+   "name": "picking_up_trash",
+   "source": "rlc2025",
+   "left": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "right": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "exempt_right": false,
+   "demo_stats": {
+    "left": {
+     "n_episodes": 200,
+     "n_closing": 1,
+     "n_any_closed_frame": 1,
+     "close_frac": 0.005,
+     "first_close_progress_p00": 0.796,
+     "first_close_progress_p01": 0.796,
+     "first_close_progress_p05": 0.796,
+     "first_close_progress_p25": 0.796,
+     "first_close_progress_p50": 0.796
+    },
+    "right": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    }
+   }
+  },
+  "2": {
+   "name": "putting_away_Halloween_decorations",
+   "source": "rlc2025",
+   "left": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "right": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "exempt_right": false,
+   "demo_stats": {
+    "left": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    },
+    "right": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    }
+   }
+  },
+  "3": {
+   "name": "cleaning_up_plates_and_food",
+   "source": "rlc2025",
+   "left": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "right": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "exempt_right": false,
+   "demo_stats": {
+    "left": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    },
+    "right": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    }
+   }
+  },
+  "4": {
+   "name": "can_meat",
+   "source": "rlc2025",
+   "left": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "right": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "exempt_right": false,
+   "demo_stats": {
+    "left": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    },
+    "right": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    }
+   }
+  },
+  "5": {
+   "name": "setting_mousetraps",
+   "source": "rlc2025",
+   "left": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "right": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "exempt_right": false,
+   "demo_stats": {
+    "left": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    },
+    "right": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    }
+   }
+  },
+  "6": {
+   "name": "hiding_Easter_eggs",
+   "source": "rlc2025",
+   "left": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "right": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "exempt_right": false,
+   "demo_stats": {
+    "left": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    },
+    "right": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    }
+   }
+  },
+  "7": {
+   "name": "picking_up_toys",
+   "source": "rlc2025",
+   "left": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "right": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "exempt_right": false,
+   "demo_stats": {
+    "left": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    },
+    "right": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    }
+   }
+  },
+  "8": {
+   "name": "rearranging_kitchen_furniture",
+   "source": "rlc2025",
+   "left": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "right": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "exempt_right": false,
+   "demo_stats": {
+    "left": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    },
+    "right": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    }
+   }
+  },
+  "9": {
+   "name": "putting_up_Christmas_decorations_inside",
+   "source": "rlc2025",
+   "left": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "right": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "exempt_right": false,
+   "demo_stats": {
+    "left": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    },
+    "right": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    }
+   }
+  },
+  "10": {
+   "name": "set_up_a_coffee_station_in_your_kitchen",
+   "source": "rlc2025",
+   "left": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "right": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "exempt_right": false,
+   "demo_stats": {
+    "left": {
+     "n_episodes": 200,
+     "n_closing": 4,
+     "n_any_closed_frame": 6,
+     "close_frac": 0.02,
+     "first_close_progress_p00": 0.1068,
+     "first_close_progress_p01": 0.1071,
+     "first_close_progress_p05": 0.1086,
+     "first_close_progress_p25": 0.1161,
+     "first_close_progress_p50": 0.1266
+    },
+    "right": {
+     "n_episodes": 200,
+     "n_closing": 6,
+     "n_any_closed_frame": 14,
+     "close_frac": 0.03,
+     "first_close_progress_p00": 0.0654,
+     "first_close_progress_p01": 0.0676,
+     "first_close_progress_p05": 0.0764,
+     "first_close_progress_p25": 0.1156,
+     "first_close_progress_p50": 0.1445
+    }
+   }
+  },
+  "11": {
+   "name": "putting_dishes_away_after_cleaning",
+   "source": "rlc2025",
+   "left": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "right": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "exempt_right": false,
+   "demo_stats": {
+    "left": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    },
+    "right": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    }
+   }
+  },
+  "12": {
+   "name": "preparing_lunch_box",
+   "source": "rlc2025",
+   "left": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "right": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "exempt_right": false,
+   "demo_stats": {
+    "left": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    },
+    "right": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    }
+   }
+  },
+  "13": {
+   "name": "loading_the_car",
+   "source": "rlc2025",
+   "left": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "right": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "exempt_right": false,
+   "demo_stats": {
+    "left": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    },
+    "right": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    }
+   }
+  },
+  "14": {
+   "name": "carrying_in_groceries",
+   "source": "rlc2025",
+   "left": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "right": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "exempt_right": false,
+   "demo_stats": {
+    "left": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    },
+    "right": {
+     "n_episodes": 200,
+     "n_closing": 2,
+     "n_any_closed_frame": 2,
+     "close_frac": 0.01,
+     "first_close_progress_p00": 0.4213,
+     "first_close_progress_p01": 0.4221,
+     "first_close_progress_p05": 0.4253,
+     "first_close_progress_p25": 0.4413,
+     "first_close_progress_p50": 0.4613
+    }
+   }
+  },
+  "15": {
+   "name": "bringing_in_wood",
+   "source": "rlc2025",
+   "left": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "right": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "exempt_right": false,
+   "demo_stats": {
+    "left": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    },
+    "right": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    }
+   }
+  },
+  "16": {
+   "name": "moving_boxes_to_storage",
+   "source": "rlc2025",
+   "left": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "right": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "exempt_right": false,
+   "demo_stats": {
+    "left": {
+     "n_episodes": 200,
+     "n_closing": 1,
+     "n_any_closed_frame": 1,
+     "close_frac": 0.005,
+     "first_close_progress_p00": 0.0005,
+     "first_close_progress_p01": 0.0005,
+     "first_close_progress_p05": 0.0005,
+     "first_close_progress_p25": 0.0005,
+     "first_close_progress_p50": 0.0005
+    },
+    "right": {
+     "n_episodes": 200,
+     "n_closing": 1,
+     "n_any_closed_frame": 1,
+     "close_frac": 0.005,
+     "first_close_progress_p00": 0.0005,
+     "first_close_progress_p01": 0.0005,
+     "first_close_progress_p05": 0.0005,
+     "first_close_progress_p25": 0.0005,
+     "first_close_progress_p50": 0.0005
+    }
+   }
+  },
+  "17": {
+   "name": "bringing_water",
+   "source": "rlc2025",
+   "left": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "right": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "exempt_right": false,
+   "demo_stats": {
+    "left": {
+     "n_episodes": 200,
+     "n_closing": 1,
+     "n_any_closed_frame": 1,
+     "close_frac": 0.005,
+     "first_close_progress_p00": 0.0008,
+     "first_close_progress_p01": 0.0008,
+     "first_close_progress_p05": 0.0008,
+     "first_close_progress_p25": 0.0008,
+     "first_close_progress_p50": 0.0008
+    },
+    "right": {
+     "n_episodes": 200,
+     "n_closing": 1,
+     "n_any_closed_frame": 1,
+     "close_frac": 0.005,
+     "first_close_progress_p00": 0.0008,
+     "first_close_progress_p01": 0.0008,
+     "first_close_progress_p05": 0.0008,
+     "first_close_progress_p25": 0.0008,
+     "first_close_progress_p50": 0.0008
+    }
+   }
+  },
+  "18": {
+   "name": "tidying_bedroom",
+   "source": "rlc2025",
+   "left": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "right": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "exempt_right": false,
+   "demo_stats": {
+    "left": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    },
+    "right": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    }
+   }
+  },
+  "19": {
+   "name": "outfit_a_basic_toolbox",
+   "source": "rlc2025",
+   "left": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "right": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "exempt_right": false,
+   "demo_stats": {
+    "left": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    },
+    "right": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    }
+   }
+  },
+  "20": {
+   "name": "sorting_vegetables",
+   "source": "rlc2025",
+   "left": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "right": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "exempt_right": false,
+   "demo_stats": {
+    "left": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    },
+    "right": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    }
+   }
+  },
+  "21": {
+   "name": "collecting_childrens_toys",
+   "source": "rlc2025",
+   "left": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "right": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "exempt_right": false,
+   "demo_stats": {
+    "left": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    },
+    "right": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    }
+   }
+  },
+  "22": {
+   "name": "putting_shoes_on_rack",
+   "source": "rlc2025",
+   "left": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "right": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "exempt_right": false,
+   "demo_stats": {
+    "left": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    },
+    "right": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    }
+   }
+  },
+  "23": {
+   "name": "boxing_books_up_for_storage",
+   "source": "rlc2025",
+   "left": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "right": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "exempt_right": false,
+   "demo_stats": {
+    "left": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    },
+    "right": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    }
+   }
+  },
+  "24": {
+   "name": "storing_food",
+   "source": "rlc2025",
+   "left": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "right": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "exempt_right": false,
+   "demo_stats": {
+    "left": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    },
+    "right": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    }
+   }
+  },
+  "25": {
+   "name": "clearing_food_from_table_into_fridge",
+   "source": "rlc2025",
+   "left": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "right": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "exempt_right": false,
+   "demo_stats": {
+    "left": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    },
+    "right": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    }
+   }
+  },
+  "26": {
+   "name": "assembling_gift_baskets",
+   "source": "rlc2025",
+   "left": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "right": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "exempt_right": false,
+   "demo_stats": {
+    "left": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    },
+    "right": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    }
+   }
+  },
+  "27": {
+   "name": "sorting_household_items",
+   "source": "rlc2025",
+   "left": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "right": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "exempt_right": false,
+   "demo_stats": {
+    "left": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    },
+    "right": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    }
+   }
+  },
+  "28": {
+   "name": "getting_organized_for_work",
+   "source": "rlc2025",
+   "left": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "right": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "exempt_right": false,
+   "demo_stats": {
+    "left": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    },
+    "right": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    }
+   }
+  },
+  "29": {
+   "name": "clean_up_your_desk",
+   "source": "rlc2025",
+   "left": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "right": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "exempt_right": false,
+   "demo_stats": {
+    "left": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    },
+    "right": {
+     "n_episodes": 200,
+     "n_closing": 1,
+     "n_any_closed_frame": 1,
+     "close_frac": 0.005,
+     "first_close_progress_p00": 0.2545,
+     "first_close_progress_p01": 0.2545,
+     "first_close_progress_p05": 0.2545,
+     "first_close_progress_p25": 0.2545,
+     "first_close_progress_p50": 0.2545
+    }
+   }
+  },
+  "30": {
+   "name": "setting_the_fire",
+   "source": "rlc2025",
+   "left": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "right": {
+    "always_open": false,
+    "min_stage": 6,
+    "min_progress": 0.2609
+   },
+   "exempt_right": false,
+   "demo_stats": {
+    "left": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    },
+    "right": {
+     "n_episodes": 200,
+     "n_closing": 190,
+     "n_any_closed_frame": 190,
+     "close_frac": 0.95,
+     "first_close_progress_p00": 0.4067,
+     "first_close_progress_p01": 0.4349,
+     "first_close_progress_p05": 0.5049,
+     "first_close_progress_p25": 0.592,
+     "first_close_progress_p50": 0.6825
+    }
+   }
+  },
+  "31": {
+   "name": "clean_boxing_gloves",
+   "source": "rlc2025",
+   "left": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "right": {
+    "always_open": false,
+    "min_stage": 8,
+    "min_progress": 0.3045
+   },
+   "exempt_right": false,
+   "demo_stats": {
+    "left": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    },
+    "right": {
+     "n_episodes": 200,
+     "n_closing": 200,
+     "n_any_closed_frame": 200,
+     "close_frac": 1.0,
+     "first_close_progress_p00": 0.4931,
+     "first_close_progress_p01": 0.5075,
+     "first_close_progress_p05": 0.5791,
+     "first_close_progress_p25": 0.6837,
+     "first_close_progress_p50": 0.8677
+    }
+   }
+  },
+  "32": {
+   "name": "wash_a_baseball_cap",
+   "source": "rlc2025",
+   "left": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "right": {
+    "always_open": false,
+    "min_stage": 5,
+    "min_progress": 0.3943
+   },
+   "exempt_right": false,
+   "demo_stats": {
+    "left": {
+     "n_episodes": 200,
+     "n_closing": 1,
+     "n_any_closed_frame": 1,
+     "close_frac": 0.005,
+     "first_close_progress_p00": 0.9566,
+     "first_close_progress_p01": 0.9566,
+     "first_close_progress_p05": 0.9566,
+     "first_close_progress_p25": 0.9566,
+     "first_close_progress_p50": 0.9566
+    },
+    "right": {
+     "n_episodes": 200,
+     "n_closing": 199,
+     "n_any_closed_frame": 199,
+     "close_frac": 0.995,
+     "first_close_progress_p00": 0.517,
+     "first_close_progress_p01": 0.6571,
+     "first_close_progress_p05": 0.6999,
+     "first_close_progress_p25": 0.8041,
+     "first_close_progress_p50": 0.886
+    }
+   }
+  },
+  "33": {
+   "name": "wash_dog_toys",
+   "source": "rlc2025",
+   "left": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "right": {
+    "always_open": false,
+    "min_stage": 11,
+    "min_progress": 0.4597
+   },
+   "exempt_right": false,
+   "demo_stats": {
+    "left": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    },
+    "right": {
+     "n_episodes": 200,
+     "n_closing": 200,
+     "n_any_closed_frame": 200,
+     "close_frac": 1.0,
+     "first_close_progress_p00": 0.7247,
+     "first_close_progress_p01": 0.7662,
+     "first_close_progress_p05": 0.7982,
+     "first_close_progress_p25": 0.8725,
+     "first_close_progress_p50": 0.91
+    }
+   }
+  },
+  "34": {
+   "name": "hanging_pictures",
+   "source": "rlc2025",
+   "left": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "right": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "exempt_right": false,
+   "demo_stats": {
+    "left": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    },
+    "right": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    }
+   }
+  },
+  "35": {
+   "name": "attach_a_camera_to_a_tripod",
+   "source": "rlc2025",
+   "left": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "right": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "exempt_right": false,
+   "demo_stats": {
+    "left": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    },
+    "right": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    }
+   }
+  },
+  "36": {
+   "name": "clean_a_patio",
+   "source": "rlc2025",
+   "left": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "right": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "exempt_right": false,
+   "demo_stats": {
+    "left": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    },
+    "right": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    }
+   }
+  },
+  "37": {
+   "name": "clean_a_trumpet",
+   "source": "rlc2025",
+   "left": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "right": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "exempt_right": false,
+   "demo_stats": {
+    "left": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    },
+    "right": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    }
+   }
+  },
+  "38": {
+   "name": "spraying_for_bugs",
+   "source": "rlc2025",
+   "left": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "exempt_right": true,
+   "demo_stats": {
+    "left": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    },
+    "right": {
+     "n_episodes": 200,
+     "n_closing": 200,
+     "n_any_closed_frame": 200,
+     "close_frac": 1.0,
+     "first_close_progress_p00": 0.1378,
+     "first_close_progress_p01": 0.1518,
+     "first_close_progress_p05": 0.1854,
+     "first_close_progress_p25": 0.2455,
+     "first_close_progress_p50": 0.2975
+    }
+   }
+  },
+  "39": {
+   "name": "spraying_fruit_trees",
+   "source": "rlc2025",
+   "left": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "exempt_right": true,
+   "demo_stats": {
+    "left": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    },
+    "right": {
+     "n_episodes": 200,
+     "n_closing": 199,
+     "n_any_closed_frame": 199,
+     "close_frac": 0.995,
+     "first_close_progress_p00": 0.1793,
+     "first_close_progress_p01": 0.1994,
+     "first_close_progress_p05": 0.2077,
+     "first_close_progress_p25": 0.2499,
+     "first_close_progress_p50": 0.289
+    }
+   }
+  },
+  "40": {
+   "name": "make_microwave_popcorn",
+   "source": "rlc2025",
+   "left": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "right": {
+    "always_open": false,
+    "min_stage": 4,
+    "min_progress": 0.1839
+   },
+   "exempt_right": false,
+   "demo_stats": {
+    "left": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    },
+    "right": {
+     "n_episodes": 200,
+     "n_closing": 200,
+     "n_any_closed_frame": 200,
+     "close_frac": 1.0,
+     "first_close_progress_p00": 0.2279,
+     "first_close_progress_p01": 0.3065,
+     "first_close_progress_p05": 0.6116,
+     "first_close_progress_p25": 0.8387,
+     "first_close_progress_p50": 0.9222
+    }
+   }
+  },
+  "41": {
+   "name": "cook_cabbage",
+   "source": "rlc2025",
+   "left": {
+    "always_open": false,
+    "min_stage": 14,
+    "min_progress": 0.3625
+   },
+   "right": {
+    "always_open": false,
+    "min_stage": 14,
+    "min_progress": 0.5861
+   },
+   "exempt_right": false,
+   "demo_stats": {
+    "left": {
+     "n_episodes": 200,
+     "n_closing": 197,
+     "n_any_closed_frame": 197,
+     "close_frac": 0.985,
+     "first_close_progress_p00": 0.5332,
+     "first_close_progress_p01": 0.6042,
+     "first_close_progress_p05": 0.659,
+     "first_close_progress_p25": 0.8967,
+     "first_close_progress_p50": 0.9729
+    },
+    "right": {
+     "n_episodes": 200,
+     "n_closing": 1,
+     "n_any_closed_frame": 2,
+     "close_frac": 0.005,
+     "first_close_progress_p00": 0.9769,
+     "first_close_progress_p01": 0.9769,
+     "first_close_progress_p05": 0.9769,
+     "first_close_progress_p25": 0.9769,
+     "first_close_progress_p50": 0.9769
+    }
+   }
+  },
+  "42": {
+   "name": "chop_an_onion",
+   "source": "rlc2025",
+   "left": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "right": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "exempt_right": false,
+   "demo_stats": {
+    "left": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    },
+    "right": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    }
+   }
+  },
+  "43": {
+   "name": "slicing_vegetables",
+   "source": "rlc2025",
+   "left": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "right": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "exempt_right": false,
+   "demo_stats": {
+    "left": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    },
+    "right": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    }
+   }
+  },
+  "44": {
+   "name": "chopping_wood",
+   "source": "rlc2025",
+   "left": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "right": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "exempt_right": false,
+   "demo_stats": {
+    "left": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    },
+    "right": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    }
+   }
+  },
+  "45": {
+   "name": "cook_hot_dogs",
+   "source": "rlc2025",
+   "left": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "right": {
+    "always_open": false,
+    "min_stage": 10,
+    "min_progress": 0.4206
+   },
+   "exempt_right": false,
+   "demo_stats": {
+    "left": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    },
+    "right": {
+     "n_episodes": 200,
+     "n_closing": 200,
+     "n_any_closed_frame": 200,
+     "close_frac": 1.0,
+     "first_close_progress_p00": 0.6768,
+     "first_close_progress_p01": 0.701,
+     "first_close_progress_p05": 0.7404,
+     "first_close_progress_p25": 0.8294,
+     "first_close_progress_p50": 0.9197
+    }
+   }
+  },
+  "46": {
+   "name": "cook_bacon",
+   "source": "rlc2025",
+   "left": {
+    "always_open": false,
+    "min_stage": 8,
+    "min_progress": 0.4694
+   },
+   "right": {
+    "always_open": false,
+    "min_stage": 8,
+    "min_progress": 0.5856
+   },
+   "exempt_right": false,
+   "demo_stats": {
+    "left": {
+     "n_episodes": 200,
+     "n_closing": 198,
+     "n_any_closed_frame": 198,
+     "close_frac": 0.99,
+     "first_close_progress_p00": 0.7684,
+     "first_close_progress_p01": 0.7824,
+     "first_close_progress_p05": 0.8266,
+     "first_close_progress_p25": 0.8798,
+     "first_close_progress_p50": 0.9277
+    },
+    "right": {
+     "n_episodes": 200,
+     "n_closing": 2,
+     "n_any_closed_frame": 2,
+     "close_frac": 0.01,
+     "first_close_progress_p00": 0.976,
+     "first_close_progress_p01": 0.976,
+     "first_close_progress_p05": 0.9763,
+     "first_close_progress_p25": 0.9774,
+     "first_close_progress_p50": 0.9789
+    }
+   }
+  },
+  "47": {
+   "name": "freeze_pies",
+   "source": "rlc2025",
+   "left": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "right": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "exempt_right": false,
+   "demo_stats": {
+    "left": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    },
+    "right": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    }
+   }
+  },
+  "48": {
+   "name": "canning_food",
+   "source": "rlc2025",
+   "left": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "right": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "exempt_right": false,
+   "demo_stats": {
+    "left": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    },
+    "right": {
+     "n_episodes": 200,
+     "n_closing": 1,
+     "n_any_closed_frame": 1,
+     "close_frac": 0.005,
+     "first_close_progress_p00": 0.1101,
+     "first_close_progress_p01": 0.1101,
+     "first_close_progress_p05": 0.1101,
+     "first_close_progress_p25": 0.1101,
+     "first_close_progress_p50": 0.1101
+    }
+   }
+  },
+  "49": {
+   "name": "make_pizza",
+   "source": "rlc2025",
+   "left": {
+    "always_open": false,
+    "min_stage": 14,
+    "min_progress": 0.3478
+   },
+   "right": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "exempt_right": false,
+   "demo_stats": {
+    "left": {
+     "n_episodes": 200,
+     "n_closing": 200,
+     "n_any_closed_frame": 200,
+     "close_frac": 1.0,
+     "first_close_progress_p00": 0.5449,
+     "first_close_progress_p01": 0.5797,
+     "first_close_progress_p05": 0.6141,
+     "first_close_progress_p25": 0.6944,
+     "first_close_progress_p50": 0.9588
+    },
+    "right": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    }
+   }
+  },
+  "50": {
+   "name": "freeze_fruit",
+   "source": "demos2026",
+   "left": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "right": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "exempt_right": false,
+   "demo_stats": {
+    "left": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    },
+    "right": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    }
+   }
+  },
+  "51": {
+   "name": "cook_a_brisket",
+   "source": "demos2026",
+   "left": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "right": {
+    "always_open": false,
+    "min_stage": null,
+    "min_progress": 0.2867
+   },
+   "exempt_right": false,
+   "demo_stats": {
+    "left": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    },
+    "right": {
+     "n_episodes": 200,
+     "n_closing": 200,
+     "n_any_closed_frame": 200,
+     "close_frac": 1.0,
+     "first_close_progress_p00": 0.4459,
+     "first_close_progress_p01": 0.4778,
+     "first_close_progress_p05": 0.5634,
+     "first_close_progress_p25": 0.69,
+     "first_close_progress_p50": 0.7701
+    }
+   }
+  },
+  "52": {
+   "name": "sorting_bottles_cans_and_paper",
+   "source": "demos2026",
+   "left": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "right": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "exempt_right": false,
+   "demo_stats": {
+    "left": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    },
+    "right": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    }
+   }
+  },
+  "53": {
+   "name": "tidying_living_room",
+   "source": "demos2026",
+   "left": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "right": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "exempt_right": false,
+   "demo_stats": {
+    "left": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    },
+    "right": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    }
+   }
+  },
+  "54": {
+   "name": "putting_away_toys",
+   "source": "demos2026",
+   "left": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "right": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "exempt_right": false,
+   "demo_stats": {
+    "left": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    },
+    "right": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    }
+   }
+  },
+  "55": {
+   "name": "re_shelving_library_books",
+   "source": "demos2026",
+   "left": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "right": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "exempt_right": false,
+   "demo_stats": {
+    "left": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    },
+    "right": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    }
+   }
+  },
+  "56": {
+   "name": "make_rose_centerpieces",
+   "source": "demos2026",
+   "left": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "right": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "exempt_right": false,
+   "demo_stats": {
+    "left": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    },
+    "right": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    }
+   }
+  },
+  "57": {
+   "name": "sweeping_garage",
+   "source": "demos2026",
+   "left": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "right": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "exempt_right": false,
+   "demo_stats": {
+    "left": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    },
+    "right": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    }
+   }
+  },
+  "58": {
+   "name": "stacking_wood",
+   "source": "demos2026",
+   "left": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "right": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "exempt_right": false,
+   "demo_stats": {
+    "left": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    },
+    "right": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    }
+   }
+  },
+  "59": {
+   "name": "organizing_art_supplies",
+   "source": "demos2026",
+   "left": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "right": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "exempt_right": false,
+   "demo_stats": {
+    "left": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    },
+    "right": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    }
+   }
+  },
+  "60": {
+   "name": "scrubbing_bathroom_floor",
+   "source": "demos2026",
+   "left": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "right": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "exempt_right": false,
+   "demo_stats": {
+    "left": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    },
+    "right": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    }
+   }
+  },
+  "61": {
+   "name": "bringing_paper_to_recycling",
+   "source": "demos2026",
+   "left": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "right": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "exempt_right": false,
+   "demo_stats": {
+    "left": {
+     "n_episodes": 200,
+     "n_closing": 1,
+     "n_any_closed_frame": 1,
+     "close_frac": 0.005,
+     "first_close_progress_p00": 0.7018,
+     "first_close_progress_p01": 0.7018,
+     "first_close_progress_p05": 0.7018,
+     "first_close_progress_p25": 0.7018,
+     "first_close_progress_p50": 0.7018
+    },
+    "right": {
+     "n_episodes": 200,
+     "n_closing": 5,
+     "n_any_closed_frame": 5,
+     "close_frac": 0.025,
+     "first_close_progress_p00": 0.4304,
+     "first_close_progress_p01": 0.4312,
+     "first_close_progress_p05": 0.4341,
+     "first_close_progress_p25": 0.4489,
+     "first_close_progress_p50": 0.4781
+    }
+   }
+  },
+  "62": {
+   "name": "halve_an_egg",
+   "source": "demos2026",
+   "left": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "right": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "exempt_right": false,
+   "demo_stats": {
+    "left": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    },
+    "right": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    }
+   }
+  },
+  "63": {
+   "name": "installing_smoke_detectors",
+   "source": "demos2026",
+   "left": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "right": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "exempt_right": false,
+   "demo_stats": {
+    "left": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    },
+    "right": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    }
+   }
+  },
+  "64": {
+   "name": "setting_the_table",
+   "source": "demos2026",
+   "left": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "right": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "exempt_right": false,
+   "demo_stats": {
+    "left": {
+     "n_episodes": 200,
+     "n_closing": 1,
+     "n_any_closed_frame": 1,
+     "close_frac": 0.005,
+     "first_close_progress_p00": 0.8354,
+     "first_close_progress_p01": 0.8354,
+     "first_close_progress_p05": 0.8354,
+     "first_close_progress_p25": 0.8354,
+     "first_close_progress_p50": 0.8354
+    },
+    "right": {
+     "n_episodes": 200,
+     "n_closing": 1,
+     "n_any_closed_frame": 1,
+     "close_frac": 0.005,
+     "first_close_progress_p00": 0.0404,
+     "first_close_progress_p01": 0.0404,
+     "first_close_progress_p05": 0.0404,
+     "first_close_progress_p25": 0.0404,
+     "first_close_progress_p50": 0.0404
+    }
+   }
+  },
+  "65": {
+   "name": "unloading_the_car",
+   "source": "demos2026",
+   "left": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "right": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "exempt_right": false,
+   "demo_stats": {
+    "left": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    },
+    "right": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    }
+   }
+  },
+  "66": {
+   "name": "turning_out_all_lights_before_sleep",
+   "source": "demos2026",
+   "left": {
+    "always_open": false,
+    "min_stage": null,
+    "min_progress": 0.0973
+   },
+   "right": {
+    "always_open": false,
+    "min_stage": null,
+    "min_progress": 0.1052
+   },
+   "exempt_right": false,
+   "demo_stats": {
+    "left": {
+     "n_episodes": 200,
+     "n_closing": 200,
+     "n_any_closed_frame": 200,
+     "close_frac": 1.0,
+     "first_close_progress_p00": 0.1578,
+     "first_close_progress_p01": 0.1622,
+     "first_close_progress_p05": 0.1893,
+     "first_close_progress_p25": 0.3324,
+     "first_close_progress_p50": 0.6321
+    },
+    "right": {
+     "n_episodes": 200,
+     "n_closing": 200,
+     "n_any_closed_frame": 200,
+     "close_frac": 1.0,
+     "first_close_progress_p00": 0.1624,
+     "first_close_progress_p01": 0.1753,
+     "first_close_progress_p05": 0.2001,
+     "first_close_progress_p25": 0.2543,
+     "first_close_progress_p50": 0.3208
+    }
+   }
+  },
+  "67": {
+   "name": "boxing_food_after_dinner",
+   "source": "demos2026",
+   "left": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "right": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "exempt_right": false,
+   "demo_stats": {
+    "left": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    },
+    "right": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    }
+   }
+  },
+  "68": {
+   "name": "cleaning_up_branches_and_twigs",
+   "source": "demos2026",
+   "left": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "right": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "exempt_right": false,
+   "demo_stats": {
+    "left": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    },
+    "right": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    }
+   }
+  },
+  "69": {
+   "name": "vacuuming_floors",
+   "source": "demos2026",
+   "left": {
+    "always_open": false,
+    "min_stage": null,
+    "min_progress": 0.1023
+   },
+   "right": {
+    "always_open": false,
+    "min_stage": null,
+    "min_progress": 0.1022
+   },
+   "exempt_right": false,
+   "demo_stats": {
+    "left": {
+     "n_episodes": 200,
+     "n_closing": 19,
+     "n_any_closed_frame": 19,
+     "close_frac": 0.095,
+     "first_close_progress_p00": 0.1554,
+     "first_close_progress_p01": 0.1705,
+     "first_close_progress_p05": 0.2308,
+     "first_close_progress_p25": 0.2753,
+     "first_close_progress_p50": 0.292
+    },
+    "right": {
+     "n_episodes": 200,
+     "n_closing": 181,
+     "n_any_closed_frame": 181,
+     "close_frac": 0.905,
+     "first_close_progress_p00": 0.1592,
+     "first_close_progress_p01": 0.1703,
+     "first_close_progress_p05": 0.2028,
+     "first_close_progress_p25": 0.2653,
+     "first_close_progress_p50": 0.3139
+    }
+   }
+  },
+  "70": {
+   "name": "thawing_frozen_food",
+   "source": "demos2026",
+   "left": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "right": {
+    "always_open": false,
+    "min_stage": null,
+    "min_progress": 0.3919
+   },
+   "exempt_right": false,
+   "demo_stats": {
+    "left": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    },
+    "right": {
+     "n_episodes": 200,
+     "n_closing": 200,
+     "n_any_closed_frame": 200,
+     "close_frac": 1.0,
+     "first_close_progress_p00": 0.6306,
+     "first_close_progress_p01": 0.6531,
+     "first_close_progress_p05": 0.6878,
+     "first_close_progress_p25": 0.769,
+     "first_close_progress_p50": 0.9211
+    }
+   }
+  },
+  "71": {
+   "name": "clean_your_rusty_garden_tools",
+   "source": "demos2026",
+   "left": {
+    "always_open": false,
+    "min_stage": null,
+    "min_progress": 0.5739
+   },
+   "right": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "exempt_right": false,
+   "demo_stats": {
+    "left": {
+     "n_episodes": 200,
+     "n_closing": 1,
+     "n_any_closed_frame": 1,
+     "close_frac": 0.005,
+     "first_close_progress_p00": 0.9565,
+     "first_close_progress_p01": 0.9565,
+     "first_close_progress_p05": 0.9565,
+     "first_close_progress_p25": 0.9565,
+     "first_close_progress_p50": 0.9565
+    },
+    "right": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    }
+   }
+  },
+  "72": {
+   "name": "cook_a_frozen_pie",
+   "source": "demos2026",
+   "left": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "right": {
+    "always_open": false,
+    "min_stage": null,
+    "min_progress": 0.3265
+   },
+   "exempt_right": false,
+   "demo_stats": {
+    "left": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    },
+    "right": {
+     "n_episodes": 200,
+     "n_closing": 200,
+     "n_any_closed_frame": 200,
+     "close_frac": 1.0,
+     "first_close_progress_p00": 0.5016,
+     "first_close_progress_p01": 0.5441,
+     "first_close_progress_p05": 0.6454,
+     "first_close_progress_p25": 0.8526,
+     "first_close_progress_p50": 0.9558
+    }
+   }
+  },
+  "73": {
+   "name": "organizing_school_stuff",
+   "source": "demos2026",
+   "left": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "right": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "exempt_right": false,
+   "demo_stats": {
+    "left": {
+     "n_episodes": 200,
+     "n_closing": 1,
+     "n_any_closed_frame": 1,
+     "close_frac": 0.005,
+     "first_close_progress_p00": 0.3799,
+     "first_close_progress_p01": 0.3799,
+     "first_close_progress_p05": 0.3799,
+     "first_close_progress_p25": 0.3799,
+     "first_close_progress_p50": 0.3799
+    },
+    "right": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    }
+   }
+  },
+  "74": {
+   "name": "carrying_out_garden_furniture",
+   "source": "demos2026",
+   "left": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "right": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "exempt_right": false,
+   "demo_stats": {
+    "left": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    },
+    "right": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    }
+   }
+  },
+  "75": {
+   "name": "put_together_a_basic_pruning_kit",
+   "source": "demos2026",
+   "left": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "right": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "exempt_right": false,
+   "demo_stats": {
+    "left": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    },
+    "right": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    }
+   }
+  },
+  "76": {
+   "name": "dispose_of_glass",
+   "source": "demos2026",
+   "left": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "right": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "exempt_right": false,
+   "demo_stats": {
+    "left": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    },
+    "right": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    }
+   }
+  },
+  "77": {
+   "name": "installing_a_modem",
+   "source": "demos2026",
+   "left": {
+    "always_open": false,
+    "min_stage": null,
+    "min_progress": 0.2928
+   },
+   "right": {
+    "always_open": false,
+    "min_stage": null,
+    "min_progress": 0.3124
+   },
+   "exempt_right": false,
+   "demo_stats": {
+    "left": {
+     "n_episodes": 200,
+     "n_closing": 142,
+     "n_any_closed_frame": 142,
+     "close_frac": 0.71,
+     "first_close_progress_p00": 0.4691,
+     "first_close_progress_p01": 0.488,
+     "first_close_progress_p05": 0.5389,
+     "first_close_progress_p25": 0.631,
+     "first_close_progress_p50": 0.7078
+    },
+    "right": {
+     "n_episodes": 200,
+     "n_closing": 58,
+     "n_any_closed_frame": 58,
+     "close_frac": 0.29,
+     "first_close_progress_p00": 0.5048,
+     "first_close_progress_p01": 0.5206,
+     "first_close_progress_p05": 0.6061,
+     "first_close_progress_p25": 0.7195,
+     "first_close_progress_p50": 0.7851
+    }
+   }
+  },
+  "78": {
+   "name": "make_cabinet_doors",
+   "source": "demos2026",
+   "left": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "right": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "exempt_right": false,
+   "demo_stats": {
+    "left": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    },
+    "right": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    }
+   }
+  },
+  "79": {
+   "name": "polishing_shoes",
+   "source": "demos2026",
+   "left": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "right": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "exempt_right": false,
+   "demo_stats": {
+    "left": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    },
+    "right": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    }
+   }
+  },
+  "80": {
+   "name": "clean_up_broken_glass",
+   "source": "demos2026",
+   "left": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "right": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "exempt_right": false,
+   "demo_stats": {
+    "left": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    },
+    "right": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    }
+   }
+  },
+  "81": {
+   "name": "packing_meal_for_delivery",
+   "source": "demos2026",
+   "left": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "right": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "exempt_right": false,
+   "demo_stats": {
+    "left": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    },
+    "right": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    }
+   }
+  },
+  "82": {
+   "name": "store_batteries",
+   "source": "demos2026",
+   "left": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "right": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "exempt_right": false,
+   "demo_stats": {
+    "left": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    },
+    "right": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    }
+   }
+  },
+  "83": {
+   "name": "store_honey",
+   "source": "demos2026",
+   "left": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "right": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "exempt_right": false,
+   "demo_stats": {
+    "left": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    },
+    "right": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    }
+   }
+  },
+  "84": {
+   "name": "tidying_bathroom",
+   "source": "demos2026",
+   "left": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "right": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "exempt_right": false,
+   "demo_stats": {
+    "left": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    },
+    "right": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    }
+   }
+  },
+  "85": {
+   "name": "putting_dirty_dishes_in_sink",
+   "source": "demos2026",
+   "left": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "right": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "exempt_right": false,
+   "demo_stats": {
+    "left": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    },
+    "right": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    }
+   }
+  },
+  "86": {
+   "name": "make_gift_bags_for_baby_showers",
+   "source": "demos2026",
+   "left": {
+    "always_open": false,
+    "min_stage": null,
+    "min_progress": 0.5887
+   },
+   "right": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "exempt_right": false,
+   "demo_stats": {
+    "left": {
+     "n_episodes": 200,
+     "n_closing": 1,
+     "n_any_closed_frame": 1,
+     "close_frac": 0.005,
+     "first_close_progress_p00": 0.9811,
+     "first_close_progress_p01": 0.9811,
+     "first_close_progress_p05": 0.9811,
+     "first_close_progress_p25": 0.9811,
+     "first_close_progress_p50": 0.9811
+    },
+    "right": {
+     "n_episodes": 200,
+     "n_closing": 2,
+     "n_any_closed_frame": 2,
+     "close_frac": 0.01,
+     "first_close_progress_p00": 0.8397,
+     "first_close_progress_p01": 0.841,
+     "first_close_progress_p05": 0.8461,
+     "first_close_progress_p25": 0.8717,
+     "first_close_progress_p50": 0.9037
+    }
+   }
+  },
+  "87": {
+   "name": "collecting_aluminum_cans",
+   "source": "demos2026",
+   "left": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "right": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "exempt_right": false,
+   "demo_stats": {
+    "left": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    },
+    "right": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    }
+   }
+  },
+  "88": {
+   "name": "rearrange_your_room",
+   "source": "demos2026",
+   "left": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "right": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "exempt_right": false,
+   "demo_stats": {
+    "left": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    },
+    "right": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    }
+   }
+  },
+  "89": {
+   "name": "installing_a_fax_machine",
+   "source": "demos2026",
+   "left": {
+    "always_open": false,
+    "min_stage": null,
+    "min_progress": 0.113
+   },
+   "right": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "exempt_right": false,
+   "demo_stats": {
+    "left": {
+     "n_episodes": 200,
+     "n_closing": 200,
+     "n_any_closed_frame": 200,
+     "close_frac": 1.0,
+     "first_close_progress_p00": 0.1636,
+     "first_close_progress_p01": 0.1883,
+     "first_close_progress_p05": 0.2381,
+     "first_close_progress_p25": 0.3999,
+     "first_close_progress_p50": 0.5176
+    },
+    "right": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    }
+   }
+  },
+  "90": {
+   "name": "composting_waste",
+   "source": "demos2026",
+   "left": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "right": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "exempt_right": false,
+   "demo_stats": {
+    "left": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    },
+    "right": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    }
+   }
+  },
+  "91": {
+   "name": "store_produce",
+   "source": "demos2026",
+   "left": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "right": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "exempt_right": false,
+   "demo_stats": {
+    "left": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    },
+    "right": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    }
+   }
+  },
+  "92": {
+   "name": "installing_a_scanner",
+   "source": "demos2026",
+   "left": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "right": {
+    "always_open": false,
+    "min_stage": null,
+    "min_progress": 0.1718
+   },
+   "exempt_right": false,
+   "demo_stats": {
+    "left": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    },
+    "right": {
+     "n_episodes": 200,
+     "n_closing": 200,
+     "n_any_closed_frame": 200,
+     "close_frac": 1.0,
+     "first_close_progress_p00": 0.2348,
+     "first_close_progress_p01": 0.2864,
+     "first_close_progress_p05": 0.3777,
+     "first_close_progress_p25": 0.5891,
+     "first_close_progress_p50": 0.7224
+    }
+   }
+  },
+  "93": {
+   "name": "clean_a_keyboard",
+   "source": "demos2026",
+   "left": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "right": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "exempt_right": false,
+   "demo_stats": {
+    "left": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    },
+    "right": {
+     "n_episodes": 200,
+     "n_closing": 1,
+     "n_any_closed_frame": 1,
+     "close_frac": 0.005,
+     "first_close_progress_p00": 0.644,
+     "first_close_progress_p01": 0.644,
+     "first_close_progress_p05": 0.644,
+     "first_close_progress_p25": 0.644,
+     "first_close_progress_p50": 0.644
+    }
+   }
+  },
+  "94": {
+   "name": "dispose_of_batteries",
+   "source": "demos2026",
+   "left": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "right": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "exempt_right": false,
+   "demo_stats": {
+    "left": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    },
+    "right": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    }
+   }
+  },
+  "95": {
+   "name": "cook_brussels_sprouts",
+   "source": "demos2026",
+   "left": {
+    "always_open": false,
+    "min_stage": null,
+    "min_progress": 0.2014
+   },
+   "right": {
+    "always_open": false,
+    "min_stage": null,
+    "min_progress": 0.3868
+   },
+   "exempt_right": false,
+   "demo_stats": {
+    "left": {
+     "n_episodes": 200,
+     "n_closing": 122,
+     "n_any_closed_frame": 122,
+     "close_frac": 0.61,
+     "first_close_progress_p00": 0.3324,
+     "first_close_progress_p01": 0.3356,
+     "first_close_progress_p05": 0.3608,
+     "first_close_progress_p25": 0.4459,
+     "first_close_progress_p50": 0.5206
+    },
+    "right": {
+     "n_episodes": 200,
+     "n_closing": 200,
+     "n_any_closed_frame": 200,
+     "close_frac": 1.0,
+     "first_close_progress_p00": 0.0389,
+     "first_close_progress_p01": 0.6447,
+     "first_close_progress_p05": 0.6811,
+     "first_close_progress_p25": 0.7957,
+     "first_close_progress_p50": 0.9532
+    }
+   }
+  },
+  "96": {
+   "name": "cook_broccolini",
+   "source": "demos2026",
+   "left": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "right": {
+    "always_open": false,
+    "min_stage": null,
+    "min_progress": 0.3704
+   },
+   "exempt_right": false,
+   "demo_stats": {
+    "left": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    },
+    "right": {
+     "n_episodes": 200,
+     "n_closing": 200,
+     "n_any_closed_frame": 200,
+     "close_frac": 1.0,
+     "first_close_progress_p00": 0.5,
+     "first_close_progress_p01": 0.6174,
+     "first_close_progress_p05": 0.6622,
+     "first_close_progress_p25": 0.8157,
+     "first_close_progress_p50": 0.9289
+    }
+   }
+  },
+  "97": {
+   "name": "setup_a_bar_for_a_cocktail_party",
+   "source": "demos2026",
+   "left": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "right": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "exempt_right": false,
+   "demo_stats": {
+    "left": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    },
+    "right": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    }
+   }
+  },
+  "98": {
+   "name": "laying_tile_floors",
+   "source": "demos2026",
+   "left": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "right": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "exempt_right": false,
+   "demo_stats": {
+    "left": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    },
+    "right": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    }
+   }
+  },
+  "99": {
+   "name": "sorting_books_on_shelf",
+   "source": "demos2026",
+   "left": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "right": {
+    "always_open": true,
+    "min_stage": null,
+    "min_progress": null
+   },
+   "exempt_right": false,
+   "demo_stats": {
+    "left": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    },
+    "right": {
+     "n_episodes": 200,
+     "n_closing": 0,
+     "n_any_closed_frame": 0,
+     "close_frac": 0.0
+    }
+   }
+  }
+ }
+}

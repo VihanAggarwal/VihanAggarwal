@@ -1,0 +1,436 @@
+# b1k26 vendored copy -- DO NOT EDIT below the end-of-header line.
+# Source: StanfordVL/BEHAVIOR-1K, OmniGibson/omnigibson/eval/utils/network_utils.py at branch 2026/eval head 020ca52 (PR #2366).
+# License: MIT, Copyright (c) 2023 Stanford Vision and Learning Group (see BEHAVIOR-1K LICENSE).
+# Everything after the end-of-header line is byte-identical to upstream (sha256 8766e6518591a18ca8cb8c36b408da3cfe7247846272dc4d94e660a72aeb1346);
+# tests/test_vendor_clients.py checks it. omnigibson imports resolve to tests/vendor/omnigibson_stub.py.
+# ---- end of b1k26 header ----
+"""
+Adapted from https://github.com/Physical-Intelligence/openpi
+"""
+
+import asyncio
+import functools
+import http
+import logging
+import msgpack
+import numpy as np
+import requests
+import threading
+import time
+import torch as th
+import traceback
+import websockets
+import websockets.asyncio.server as _server
+import websockets.sync.client
+from copy import deepcopy
+from omnigibson.macros import gm
+from typing import Any, Dict, Optional, Tuple
+from urllib.parse import urlparse
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+
+
+__all__ = ["PolicyConnectionError", "PolicyTimeoutError", "WebsocketClientPolicy", "WebsocketPolicyServer"]
+
+ACTION_CHUNK_REQUEST_KEY = "__action_chunk_size__"
+MAX_RECONNECTS_PER_ROLLOUT = 3
+POLICY_RESPONSE_TIMEOUT = 600
+
+
+class PolicyConnectionError(RuntimeError):
+    """The policy connection could not be restored for the current rollout."""
+
+
+class PolicyTimeoutError(RuntimeError):
+    """An action query or the evaluation time budget expired."""
+
+
+class WebsocketClientPolicy:
+    """Implements the Policy interface by communicating with a server over websocket.
+
+    See WebsocketPolicyServer for a corresponding server implementation.
+    """
+
+    def __init__(
+        self,
+        host: str = "0.0.0.0",
+        port: int = 8000,
+        scheme: str = "ws",
+        api_key: Optional[str] = None,
+        allow_reconnect: bool = False,
+        action_chunk_size: int = 0,
+    ) -> None:
+        """
+        Initializes the websocket client policy.
+
+        Args:
+            host (str): Hostname of the websocket server to connect to.
+            port (int): Port of the websocket server to connect to. Defaults to 8000.
+            scheme (str): WebSocket scheme to use. Either "wss" (secure) or "ws" (insecure). Defaults to "ws".
+            api_key (str, optional): API key to include in the Authorization header when connecting to the websocket server, if required.
+            allow_reconnect (bool): Whether to allow automatic reconnection if the websocket connection is lost.
+                If False, the client will raise an error if the connection is lost.
+                If True, the client will attempt to reconnect up to three times per rollout.
+            action_chunk_size (int): Number of server-returned actions to execute before requesting a new
+                observation-conditioned action. Values <= 1 disable chunk requests. Only enable this when the
+                server returns an exact open-loop action sequence produced from the current observation.
+        """
+        self._uri = f"{scheme}://{host}:{port}"
+        self._packer = Packer()
+        self._api_key = api_key
+        self._ws, self._server_metadata = None, None
+        self._allow_reconnect = allow_reconnect
+        self._action_chunk_size = max(0, int(action_chunk_size))
+        self._action_chunk = None
+        self._action_chunk_index = 0
+        self._chunk_requests_supported = self._action_chunk_size > 1
+        self._reconnect_attempts = 0
+        self._deadline = None
+        self._closed = threading.Event()
+
+    def set_deadline(self, deadline: Optional[float]) -> None:
+        self._deadline = deadline
+
+    def _remaining(self, deadline: Optional[float], cap: Optional[float] = None) -> Optional[float]:
+        if self._closed.is_set():
+            raise PolicyConnectionError("Policy client closed")
+        remaining = None if deadline is None else deadline - time.monotonic()
+        if remaining is not None and remaining <= 0:
+            raise PolicyTimeoutError("Policy evaluation time budget expired")
+        if remaining is None:
+            return cap
+        return min(remaining, cap) if cap is not None else remaining
+
+    def get_server_metadata(self) -> Dict:
+        return self._server_metadata
+
+    def _wait_for_server(
+        self, max_attempts: Optional[int] = None, deadline: Optional[float] = None
+    ) -> Tuple[websockets.sync.client.ClientConnection, Dict]:
+        parsed = urlparse(self._uri)
+        host = parsed.hostname
+        port = parsed.port
+        http_scheme = "https" if parsed.scheme == "wss" else "http"
+        health_url = f"{http_scheme}://{host}:{port}/healthz"
+
+        # First, wait for the health check to pass
+        health_attempts = 0
+        while True:
+            health_attempts += 1
+            health_timeout = self._remaining(deadline, 2)
+            try:
+                response = requests.get(health_url, timeout=health_timeout)
+                if response.ok:
+                    logger.info("Health check passed, attempting websocket connection...")
+                    break
+            except Exception:
+                pass
+            if max_attempts is not None and health_attempts >= max_attempts:
+                raise PolicyConnectionError(f"Health check failed for {health_url}")
+            logger.info(f"Health check failed, waiting for server at {http_scheme}://{host}:{port}...")
+            time.sleep(self._remaining(deadline, 5))
+
+        connection_attempts = 0
+        while True:
+            connection_attempts += 1
+            try:
+                headers = {"Authorization": f"Api-Key {self._api_key}"} if self._api_key else None
+                conn = websockets.sync.client.connect(
+                    self._uri,
+                    compression=None,
+                    max_size=None,
+                    additional_headers=headers,
+                    ping_interval=60,
+                    ping_timeout=None,
+                    open_timeout=self._remaining(deadline, 10),
+                )
+                metadata = unpackb(conn.recv(timeout=self._remaining(deadline, 10)))
+                logger.info("Connected to server!")
+                return conn, metadata
+            except (OSError, EOFError, websockets.exceptions.WebSocketException) as e:
+                if max_attempts is not None and connection_attempts >= max_attempts:
+                    raise PolicyConnectionError(f"Websocket connection failed: {e}") from e
+                logger.info(f"Websocket connection failed ({e}), retrying...")
+                time.sleep(self._remaining(deadline, 5))
+
+    def _reconnect(self, error: Exception, deadline: Optional[float] = None) -> None:
+        self._ws = None
+        if not self._allow_reconnect:
+            raise PolicyConnectionError(f"Websocket connection lost: {error}") from error
+        while self._reconnect_attempts < MAX_RECONNECTS_PER_ROLLOUT:
+            self._reconnect_attempts += 1
+            logger.warning(
+                "Connection lost, reconnecting (%s/%s)...",
+                self._reconnect_attempts,
+                MAX_RECONNECTS_PER_ROLLOUT,
+            )
+            try:
+                self._ws, self._server_metadata = self._wait_for_server(max_attempts=1, deadline=deadline)
+                return
+            except PolicyConnectionError as e:
+                error = e
+                if self._reconnect_attempts < MAX_RECONNECTS_PER_ROLLOUT:
+                    time.sleep(self._remaining(deadline, 5))
+        raise PolicyConnectionError(
+            f"Policy connection failed after {MAX_RECONNECTS_PER_ROLLOUT} reconnect attempts: {error}"
+        ) from error
+
+    def _ensure_connected(self, deadline: Optional[float] = None) -> None:
+        if self._ws is not None:
+            return
+        if self._server_metadata is not None:
+            self._reconnect(ConnectionError("Previous rollout lost its policy connection"), deadline=deadline)
+            return
+        try:
+            self._ws, self._server_metadata = self._wait_for_server(deadline=deadline)
+        except PolicyConnectionError as e:
+            self._reconnect(e, deadline=deadline)
+
+    def act(self, obs: Dict) -> th.Tensor:
+        if self._action_chunk is not None and self._action_chunk_index < self._action_chunk.shape[-2]:
+            action = self._action_chunk[..., self._action_chunk_index, :].clone()
+            self._action_chunk_index += 1
+            return action
+
+        query_deadline = time.monotonic() + POLICY_RESPONSE_TIMEOUT
+        if self._deadline is not None:
+            query_deadline = min(query_deadline, self._deadline)
+        self._ensure_connected(query_deadline)
+
+        request = obs
+        if self._chunk_requests_supported:
+            request = dict(obs)
+            request[ACTION_CHUNK_REQUEST_KEY] = self._action_chunk_size
+        data = self._packer.pack(request)
+        missing_action_retries = 0
+        while True:
+            try:
+                self._ws.send(data)
+                response = self._ws.recv(timeout=self._remaining(query_deadline))
+            except (TimeoutError, PolicyTimeoutError) as e:
+                self._close_socket()
+                raise PolicyTimeoutError("Action query exceeded its time limit") from e
+            except (OSError, EOFError, websockets.exceptions.ConnectionClosed) as e:
+                self._reconnect(e, deadline=query_deadline)
+                continue
+
+            self._remaining(query_deadline)
+
+            if isinstance(response, str):
+                raise RuntimeError(f"Error in inference server:\n{response}")
+
+            action_dict = unpackb(response)
+            if "action" not in action_dict:
+                if missing_action_retries < 2:
+                    missing_action_retries += 1
+                    logger.warning("Server response missing 'action' key, retrying (%s/2)...", missing_action_retries)
+                    continue
+                raise RuntimeError(f"Server response missing 'action' key: {action_dict}")
+            action = th.from_numpy(deepcopy(action_dict["action"])).to(th.float32)
+            if self._chunk_requests_supported:
+                if "action_chunk" in action_dict:
+                    chunk = th.from_numpy(deepcopy(action_dict["action_chunk"])).to(th.float32)
+                    expected_shape = (*action.shape[:-1], self._action_chunk_size, action.shape[-1])
+                    if chunk.shape != expected_shape:
+                        raise RuntimeError(
+                            f"Server returned action_chunk shape {tuple(chunk.shape)}, expected {expected_shape}."
+                        )
+                    if not th.equal(chunk[..., 0, :], action):
+                        raise RuntimeError("Server action must exactly equal action_chunk[..., 0, :].")
+                    self._action_chunk = chunk
+                    self._action_chunk_index = 1
+                else:
+                    logger.warning(
+                        "Policy server does not support action chunks; falling back to one request per step."
+                    )
+                    self._chunk_requests_supported = False
+            self._remaining(query_deadline)
+            return action
+
+    def reset(self) -> None:
+        self._reconnect_attempts = 0
+        self._action_chunk = None
+        self._action_chunk_index = 0
+        self._ensure_connected(self._deadline)
+
+        data = self._packer.pack({"reset": True})
+        while True:
+            try:
+                self._ws.send(data)
+                self._remaining(self._deadline)
+                return
+            except (OSError, EOFError, websockets.exceptions.ConnectionClosed) as e:
+                self._reconnect(e, deadline=self._deadline)
+
+    def _close_socket(self) -> None:
+        if self._ws is not None:
+            self._ws.close()
+            self._ws = None
+
+    def close(self) -> None:
+        self._closed.set()
+        self._close_socket()
+
+
+class WebsocketPolicyServer:
+    """Serves a policy using the websocket protocol. See websocket_client_policy.py for a client implementation.
+
+    Currently only implements the `load` and `infer` methods.
+    """
+
+    def __init__(
+        self,
+        policy: Any,
+        host: str = "0.0.0.0",
+        port: int = 8000,
+        metadata: dict | None = None,
+    ) -> None:
+        self._policy = policy
+        self._host = host
+        self._port = port
+        self._metadata = metadata or {}
+
+    def serve_forever(self) -> None:
+        asyncio.run(self.run())
+
+    async def run(self):
+        logger.info(f"Starting websocket server on {self._host}:{self._port}...")
+        async with _server.serve(
+            self._handler,
+            self._host,
+            self._port,
+            compression=None,
+            max_size=None,
+            process_request=_health_check,
+        ) as server:
+            await server.serve_forever()
+
+    async def _handler(self, websocket):
+        logger.info(f"Connection from {websocket.remote_address} opened")
+        packer = Packer()
+
+        await websocket.send(packer.pack(self._metadata))
+
+        prev_total_time = None
+        while True:
+            try:
+                start_time = time.monotonic()
+                result = unpackb(await websocket.recv(), strict_map_key=False)
+                if "reset" in result:
+                    self._policy.reset()
+                    continue
+
+                obs = deepcopy(result)
+
+                infer_time = time.monotonic()
+                action = self._policy.act(obs)
+                infer_time = time.monotonic() - infer_time
+
+                action = {
+                    "action": action.cpu().numpy(),
+                }
+                action["server_timing"] = {
+                    "infer_ms": infer_time * 1000,
+                }
+                if prev_total_time is not None:
+                    # We can only record the last total time since we also want to include the send time.
+                    action["server_timing"]["prev_total_ms"] = prev_total_time * 1000
+
+                await websocket.send(packer.pack(action))
+                prev_total_time = time.monotonic() - start_time
+
+            except websockets.ConnectionClosed:
+                logger.info(f"Connection from {websocket.remote_address} closed")
+                break
+            except Exception:
+                logger.error(f"Error in connection from {websocket.remote_address}:\n{traceback.format_exc()}")
+                if gm.DEBUG:
+                    await websocket.send(traceback.format_exc())
+                try:
+                    # Try new websockets API first
+                    await websocket.close(
+                        code=websockets.frames.CloseCode.INTERNAL_ERROR,
+                        reason="Internal server error. Traceback included in previous frame.",
+                    )
+                except AttributeError:
+                    # Fallback for older websockets versions
+                    await websocket.close(code=1011, reason="Internal server error")
+                raise
+
+
+def _health_check(connection, request) -> Optional[Any]:
+    if hasattr(request, "path") and request.path == "/healthz":
+        if hasattr(connection, "respond"):
+            return connection.respond(http.HTTPStatus.OK, "OK\n")
+        else:
+            # For older websockets versions, return a simple response
+            return http.HTTPStatus.OK, {"Content-Type": "text/plain"}, b"OK\n"
+    # Continue with the normal request handling.
+    return None
+
+
+"""
+Adds NumPy array and PyTorch tensor support to msgpack.
+
+msgpack is good for (de)serializing data over a network for multiple reasons:
+- msgpack is secure (as opposed to pickle/dill/etc which allow for arbitrary code execution)
+- msgpack is widely used and has good cross-language support
+- msgpack does not require a schema (as opposed to protobuf/flatbuffers/etc) which is convenient in dynamically typed
+    languages like Python and JavaScript
+- msgpack is fast and efficient (as opposed to readable formats like JSON/YAML/etc); I found that msgpack was ~4x faster
+    than pickle for serializing large arrays using the below strategy
+
+This module supports serializing both NumPy arrays and PyTorch tensors. PyTorch tensors are converted to
+NumPy arrays (zero-copy when possible) before serialization. On deserialization, arrays are returned as NumPy arrays.
+
+The code below is adapted from https://github.com/lebedov/msgpack-numpy. The reason not to use that library directly is
+that it falls back to pickle for object arrays.
+"""
+
+
+def pack_data(obj):
+    if isinstance(obj, th.Tensor):
+        data = obj.detach().cpu().numpy()
+        return {
+            b"__ndarray__": True,
+            b"data": data.tobytes(),
+            b"dtype": data.dtype.str,
+            b"shape": data.shape,
+        }
+
+    if isinstance(obj, np.ndarray):
+        if obj.dtype.kind in ("V", "O", "c"):
+            raise ValueError(f"Unsupported dtype: {obj.dtype}")
+        return {
+            b"__ndarray__": True,
+            b"data": obj.tobytes(),
+            b"dtype": obj.dtype.str,
+            b"shape": obj.shape,
+        }
+
+    if isinstance(obj, np.generic):
+        return {
+            b"__npgeneric__": True,
+            b"data": obj.item(),
+            b"dtype": obj.dtype.str,
+        }
+
+    return obj
+
+
+def unpack_data(obj):
+    if b"__ndarray__" in obj:
+        return np.ndarray(buffer=obj[b"data"], dtype=np.dtype(obj[b"dtype"]), shape=obj[b"shape"])
+
+    if b"__npgeneric__" in obj:
+        return np.dtype(obj[b"dtype"]).type(obj[b"data"])
+
+    return obj
+
+
+Packer = functools.partial(msgpack.Packer, default=pack_data)
+packb = functools.partial(msgpack.packb, default=pack_data)
+
+Unpacker = functools.partial(msgpack.Unpacker, object_hook=unpack_data)
+unpackb = functools.partial(msgpack.unpackb, object_hook=unpack_data)

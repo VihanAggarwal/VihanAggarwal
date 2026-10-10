@@ -402,6 +402,52 @@ def test_prepare_images_from_split():
     assert not np.shares_memory(same, env.rgb["head"])
 
 
+def test_split_batch_without_image_copies_is_equivalent():
+    """copy_images=False (the front server's mode): views of the message, same values and fingerprints, and
+    prepare_images gives bit-identical, compact, non-aliasing outputs."""
+    rng = np.random.default_rng(21)
+    msg = make_msg(rng, n=2, head=(72, 72), wrist=(48, 48), task_ids=[5, 60], depth=True, cam=True)
+    dec = roundtrip(msg)
+    copied = O.split_batch(dec)
+    viewed = O.split_batch(dec, copy_images=False)
+    assert len(copied) == len(viewed) == 2
+    for a, b in zip(copied, viewed):
+        assert a.task_id == b.task_id and a.fingerprint == b.fingerprint
+        np.testing.assert_array_equal(a.proprio, b.proprio)
+        np.testing.assert_array_equal(a.cam_rel_poses, b.cam_rel_poses)
+        assert sorted(a.rgb) == sorted(b.rgb) and sorted(a.depth) == sorted(b.depth)
+        for role in a.rgb:
+            assert b.rgb[role].shape == a.rgb[role].shape and b.rgb[role].dtype == np.uint8
+            np.testing.assert_array_equal(a.rgb[role], b.rgb[role])
+            assert not b.rgb[role].flags.writeable  # a view of the read-only message, never written to
+        np.testing.assert_array_equal(a.depth["head"], b.depth["head"])
+        assert np.shares_memory(b.rgb["head"], dec[C.HEAD_RGB_KEY])
+        assert np.shares_memory(b.depth["head"], dec[C.depth_key("head")])
+        # proprio and cam_rel_poses are still private writeable copies
+        assert b.proprio.flags.writeable and not np.shares_memory(b.proprio, dec[C.PROPRIO_KEY])
+        for size in (32, 72):  # resized, and already the right size (early return)
+            pa, pb = O.prepare_images(a, size), O.prepare_images(b, size)
+            for role in pa:
+                np.testing.assert_array_equal(pa[role], pb[role])
+                assert pb[role].flags.c_contiguous and pb[role].flags.writeable
+                assert not np.shares_memory(pb[role], dec[C.rgb_key(role)])
+    # The message itself is untouched.
+    np.testing.assert_array_equal(dec[C.HEAD_RGB_KEY], msg[C.HEAD_RGB_KEY])
+
+
+def test_split_batch_without_copies_still_converts_float_and_gray_images():
+    rng = np.random.default_rng(22)
+    msg = make_msg(rng, n=1)
+    msg[C.HEAD_RGB_KEY] = rng.uniform(0, 1, size=(1, 32, 32, 3)).astype(np.float32)
+    msg[C.LEFT_RGB_KEY] = rng.integers(0, 256, size=(1, 24, 24), dtype=np.uint8)
+    a = O.split_batch(roundtrip(msg))[0]
+    b = O.split_batch(roundtrip(msg), copy_images=False)[0]
+    for role in ("head", "left_wrist"):
+        assert b.rgb[role].dtype == np.uint8 and b.rgb[role].shape[-1] == 3
+        np.testing.assert_array_equal(a.rgb[role], b.rgb[role])
+    assert a.fingerprint == b.fingerprint
+
+
 # ------------------------------------------------------------------------------------------------------------
 # state23 / hold
 # ------------------------------------------------------------------------------------------------------------

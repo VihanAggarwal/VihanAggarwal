@@ -1,0 +1,50 @@
+# Comet pi0.5 pt50 (sunshk/openpi_comet, 2025 2nd place) served zero-shot on all 100 tasks.
+# Reference: ZSB ran exactly this checkpoint with the 2026 evaluator and measured Q 0.199 on tasks 0-49.
+#
+# Setup (docs/BACKENDS.md#openpi_comet):
+#   scripts/envs/openpi_comet.sh --prefix /opt/envs/openpi_comet       (Docker: BACKENDS=openpi_comet)
+#   hf download sunshk/openpi_comet --include "pi05-b1kpt50-cs32/*" --local-dir /ckpt/openpi_comet
+#
+# Worker kwargs are passed as one JSON object (--backend-kwargs) to
+# b1k26.backends.openpi_comet.CometBackend(checkpoint=..., **kwargs); every key is optional.
+server:
+  host: 0.0.0.0
+  ports: "8000-8049"
+  health_requires_warm: true
+
+workers:
+  comet_pt50:
+    endpoint: ws://127.0.0.1:9101
+    launch:
+      - /opt/envs/openpi_comet/venv/bin/python
+      - -m
+      - b1k26.worker
+      - --backend
+      - openpi_comet
+      - --checkpoint
+      - /ckpt/openpi_comet/pi05-b1kpt50-cs32
+      - --port
+      - "9101"
+      - --backend-kwargs
+      # config_name: the fork's serving config for both pt50 and pt12 (the README's "..._gpu40" name does not
+      #   exist; the fork's get_config would silently fall back, the backend raises instead).
+      # num_steps: flow steps (model default 10). dtype: bfloat16 (upstream) | float32 (see Turing notes).
+      # batched/max_batch: one padded sample_actions call per micro-batch (buckets 1,2,4,8 compiled at warmup).
+      # mem_fraction: XLA_PYTHON_CLIENT_MEM_FRACTION for this worker; lower it when workers share a GPU.
+      - '{"config_name": "pi05_b1k-base", "num_steps": 10, "dtype": "bfloat16", "batched": true, "max_batch": 8, "mem_fraction": 0.85}'
+    startup_timeout_s: 900
+
+profiles:
+  comet:
+    worker: comet_pt50
+    image_size: 224
+    resize: bilinear_pad          # openpi_client resize_with_pad, as Comet's wrapper and ZSB's server do
+    mask_base_qvel: true          # 2025 demos have base_qvel ~0; the 2026 evaluator sends real robot-frame velocity
+    prompt: comet2025             # Comet's scripts/task_mapping.json texts (typos kept); 2026 instruction for 50-99
+    execution: {execute_steps: 32, predicted_steps_to_use: 32, keep_for_inpaint: 0}   # receding horizon, max_len 32
+    corrections: true
+    use_stage: false
+
+routing:
+  default: comet
+  per_task: {}
