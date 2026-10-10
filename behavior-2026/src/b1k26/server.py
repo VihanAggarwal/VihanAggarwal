@@ -3,7 +3,9 @@
     b1k26-serve --config configs/fake.yaml [--ports 8000-8049] [--host 0.0.0.0] [--log-level INFO]
 
 Protocol (OmniGibson eval/utils/network_utils.py, v3.9.3-post1/post2 and the 2026/eval branch):
-- ``GET /healthz``: 200 "OK" once the engine is warm (503 before, unless ``server.health_requires_warm: false``).
+- ``GET /healthz``: 200 "OK" once the engine is warm (503 before, unless ``server.health_requires_warm: false``):
+  every routed worker has finished its first start attempt and the default profile's worker is ready. It turns 503
+  again while the default worker is down (backoff) and back to 200 when it is relaunched.
   ``GET /status`` returns a JSON summary. Every other request is a websocket upgrade.
 - On connect the server first sends a msgpack map (metadata); the client blocks on it.
 - ``{"reset": True}`` resets every session of the connection's slot group and gets no reply.
@@ -91,11 +93,11 @@ def log_rollout_end(s: RolloutSession, reason: str) -> None:
     st = s.stats.summary()
     logger.info(
         "rollout end (%s) port=%s group=%s slot=%s task=%s profile=%s steps=%d queries=%d plans=%d "
-        "plan_failures=%d hold_steps=%d corrections=%d compressed=%d replays=%d query_ms[mean=%.1f p50=%.1f "
-        "max=%.1f] plan_ms[mean=%.1f max=%.1f] wall=%.0fs", reason, s.key[0], s.key[1], s.key[2], s.task_id,
-        s.profile_name, s.step, st["queries"], st["plans"], st["plan_failures"], st["hold_steps"],
-        st["corrections"], st["compressed"], st["replays"], st["query_ms_mean"], st["query_ms_p50"],
-        st["query_ms_max"], st["plan_ms_mean"], st["plan_ms_max"], st["wall_s"],
+        "plan_failures=%d hold_steps=%d corrections=%d compressed=%d replays=%d restart_wait=%.0fs "
+        "query_ms[mean=%.1f p50=%.1f max=%.1f] plan_ms[mean=%.1f max=%.1f] wall=%.0fs", reason, s.key[0], s.key[1],
+        s.key[2], s.task_id, s.profile_name, s.step, st["queries"], st["plans"], st["plan_failures"], st["hold_steps"],
+        st["corrections"], st["compressed"], st["replays"], st["restart_wait_s"], st["query_ms_mean"],
+        st["query_ms_p50"], st["query_ms_max"], st["plan_ms_mean"], st["plan_ms_max"], st["wall_s"],
     )
 
 

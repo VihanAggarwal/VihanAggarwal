@@ -22,8 +22,10 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import itertools
 import json
 import math
+import random
 import sys
 from collections import defaultdict
 from pathlib import Path
@@ -177,18 +179,27 @@ def route(
             if not est:
                 decisions.append(Decision(task, tid, default, default, 0.0, {}, "no allowed candidate; default kept"))
                 continue
-            best = max(est, key=lambda c: est[c][0])
+            # Prefer candidates measured on this task; fall back to the prior-only argmax when none is.
+            measured = {c: v for c, v in est.items() if v[2] >= min_n} or est
+            best = max(measured, key=lambda c: measured[c][0])
             decisions.append(Decision(task, tid, best, default, 0.0, est, "default not allowed for this task"))
             continue
-        best = max(est, key=lambda c: est[c][0])
+        # Only candidates measured on this task (n >= min_n) can be routed to, so the argmax runs over those (plus
+        # the default). An unmeasured candidate's posterior is just its global prior; letting it win the argmax and
+        # then fail min_n would mask a measured candidate that clears the margin.
+        elig = {c: v for c, v in est.items() if c == default or v[2] >= min_n}
+        best = max(elig, key=lambda c: elig[c][0])
         gain = est[best][0] - est[default][0]
-        if best != default and gain > margin and est[best][2] >= min_n:
-            reason = f"shrunk gain {gain:+.3f} > margin {margin} with n={est[best][2]}"
+        prior_best = max(est, key=lambda c: est[c][0])
+        note = ""
+        if prior_best not in elig:
+            note = f"; {prior_best} has the best prior but n={est[prior_best][2]} < min_n {min_n} (not eligible)"
+        if best != default and gain > margin:
+            reason = f"shrunk gain {gain:+.3f} > margin {margin} with n={est[best][2]}" + note
             decisions.append(Decision(task, tid, best, default, gain, est, reason))
         else:
-            why = "default is best" if best == default else (
-                f"gain {gain:+.3f} <= margin {margin}" if gain <= margin else f"n={est[best][2]} < min_n {min_n}")
-            decisions.append(Decision(task, tid, default, default, 0.0, est, why))
+            why = "default is best" if best == default else f"gain {gain:+.3f} <= margin {margin}"
+            decisions.append(Decision(task, tid, default, default, 0.0, est, why + note))
     return decisions
 
 
@@ -202,18 +213,18 @@ def split_half_gain(
 ) -> dict:
     """Cross-validated estimate of what the routing really gains over always using the default.
 
-    Instances are split into two halves deterministically (several different splits); routes are chosen on one
-    half and the resulting policy (default vs routed) is scored on the other half, using raw means of the
-    candidates' rollouts there.
+    Instances are split into two halves: up to ``repeats`` *distinct* splits (seeded, so the result is
+    reproducible; with few instance ids every possible split is used, e.g. both directions for 2 ids). Routes are
+    chosen on one half and the resulting policy (default vs routed) is scored on the other half, using raw means of
+    the candidates' rollouts there. ``splits`` in the result is the number of distinct splits actually scored;
+    ``split_sd`` is the spread of the gain across splits (split sensitivity: the splits reuse the same rollouts, so
+    it is not a standard error).
     """
     all_ids = sorted({r.instance_id for rs in rollouts_by_cand.values() for r in rs})
     if len(all_ids) < 2:
         return {"available": False, "reason": "need rollouts on at least 2 distinct instance ids"}
     gains, routed_scores, default_scores = [], [], []
-    for rep in range(repeats):
-        # Deterministic pseudo-random split: rotate and interleave ids by repeat index.
-        order = all_ids[rep % len(all_ids):] + all_ids[: rep % len(all_ids)]
-        half_a = set(order[0::2]) if rep % 2 == 0 else set(order[1::2])
+    for half_a in _distinct_halves(all_ids, repeats):
         train = {c: [r for r in rs if r.instance_id in half_a] for c, rs in rollouts_by_cand.items()}
         test = {c: [r for r in rs if r.instance_id not in half_a] for c, rs in rollouts_by_cand.items()}
         if not any(train.values()) or not any(test.values()):
@@ -239,14 +250,41 @@ def split_half_gain(
     if not gains:
         return {"available": False, "reason": "no task had held-out rollouts for both default and chosen candidate"}
     mean = sum(gains) / len(gains)
+    split_sd = math.sqrt(sum((g - mean) ** 2 for g in gains) / (len(gains) - 1)) if len(gains) > 1 else 0.0
     return {
         "available": True,
-        "repeats": len(gains),
+        "splits": len(gains),
         "mean_gain_per_task": mean,
+        "split_sd": split_sd,
         "mean_routed_q": sum(routed_scores) / len(routed_scores),
         "mean_default_q": sum(default_scores) / len(default_scores),
         "note": "Gain per task on held-out halves; negative or ~0 means per-task routing is not worth it.",
     }
+
+
+def _distinct_halves(ids: list[int], wanted: int, seed: int = 0) -> list[frozenset[int]]:
+    """Up to ``wanted`` distinct training halves (size len(ids) // 2) of ``ids``, seeded. A split and its complement
+    are different splits (training on either half is a different estimate)."""
+    rng = random.Random(seed)
+    k = len(ids) // 2
+    seen: list[frozenset[int]] = []
+    seen_set: set[frozenset[int]] = set()
+    total = math.comb(len(ids), k)
+    target = min(wanted, total)
+    if total <= 4 * target:  # few possible splits: enumerate them all, then take a seeded sample in a stable order
+        every = [frozenset(c) for c in itertools.combinations(ids, k)]
+        rng.shuffle(every)
+        return every[:target]
+    attempts = 0
+    while len(seen) < target and attempts < 50 * target:
+        attempts += 1
+        shuffled = ids[:]
+        rng.shuffle(shuffled)
+        half = frozenset(shuffled[:k])
+        if half not in seen_set:
+            seen_set.add(half)
+            seen.append(half)
+    return seen
 
 
 def write_routing_yaml(decisions: list[Decision], default: str, path: Path) -> None:

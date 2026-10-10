@@ -393,7 +393,10 @@ def check_rlc_state_extraction(b1k_policy_module: Any) -> None:
 
 
 def _set_xla_env(mem_fraction: float | None, allocator: str | None) -> None:
-    if mem_fraction is not None:
+    if mem_fraction is not None or os.environ.get("B1K26_MEM_FRACTION"):
+        from b1k26.backends.openpi_b1k import node_mem_fraction
+
+        mem_fraction = node_mem_fraction(float(mem_fraction) if mem_fraction is not None else 0.85)
         if not 0.05 <= float(mem_fraction) <= 1.0:
             raise ValueError("mem_fraction must be in [0.05, 1.0]")
         if "jax" in sys.modules:

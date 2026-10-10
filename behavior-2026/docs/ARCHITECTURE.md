@@ -152,22 +152,29 @@ class StageTracker:     # exact port of RLC update_current_stage: history 3; onc
 server:
   host: 0.0.0.0
   ports: "8000-8049"          # int, "8000", "8000-8049", "8000,8002" or a list; CLI --ports / env B1K26_PORTS override
-  health_requires_warm: true  # /healthz returns 503 until the default profile's worker is ready
+  health_requires_warm: true  # /healthz returns 503 until every routed worker has finished its first start attempt
+                              # (ready, or failed and retried in the background) and while the default one is down
 engine:                       # (added) every key optional
   plan_timeout_s: 120         # one plan (queueing + inference); on timeout the step gets hold actions
+  restart_wait_s: 420         # a query whose worker is (re)starting waits up to this long instead of holding;
+                              # restart_wait_s + plan_timeout_s must stay < 590 (2026/eval fails a 600 s query)
   max_batch: 8                # micro-batch size per worker request
   batch_wait_ms: 5            # an idle worker waits this long for concurrent plan requests (multi-port batching)
   gripper_rules: null         # path to a gripper_rules.json (default: packaged)
-  fallback_to_default: true   # route to the default profile when a routed worker failed or does not serve the task
+  fallback_to_default: true   # route to the default profile while a routed worker is down (backoff/failed) or when
+                              # it does not serve the task
 workers:
   comet_pt50:
     endpoint: ws://127.0.0.1:9101          # and/or `launch:` (argv) + `port:`; the front starts and supervises it
     launch: ["/opt/envs/openpi_comet/venv/bin/python", "-m", "b1k26.worker", "--backend", "openpi_comet", "--checkpoint", "/ckpt/pt50", "--port", "9101"]
-    startup_timeout_s: 900
+    startup_timeout_s: 900    # no /healthz answer by then: relaunch; still loading (503): wait up to 3x this
     env: {}                   # (added) extra environment for the launched process
     cwd: null                 # (added)
-    max_restarts: 3           # (added) restarts allowed within any restart_window_s (start-up relaunches count)
-    restart_window_s: 3600    # (added) sliding window: a crash loop gives up, one crash a day never exhausts it
+    max_restarts: 3           # (added) immediate relaunches allowed within any restart_window_s (start-up ones count)
+    restart_window_s: 3600    # (added) sliding window; beyond the budget a worker is relaunched after a backoff
+    restart_backoff_s: 10     # (added) first backoff delay, doubled after each failed relaunch ...
+    restart_backoff_max_s: 300  # (added) ... up to this. A launched worker is never given up except on a
+                              # configuration error (missing program, worker exit status 2)
     max_batch: null           # (added) per-worker cap on engine.max_batch
 profiles:
   comet:
@@ -184,7 +191,10 @@ routing:
   default: comet
   per_task: {}                      # task name or id -> profile
 ```
-In `launch`, `{python}` expands to the front server's interpreter and `{port}` to the worker port. Unknown keys at
+In `launch`, `{python}` expands to the front server's interpreter and `{port}` to the worker port. *(added)* A
+launched loopback worker whose port is taken (another server on the same host, e.g. one copy per GPU or a second
+container under enroot / `--network host`) is moved to a free loopback port: `{port}` and a literal `--port N` equal to
+the worker port are rewritten together with the endpoint (`WorkerConfig.relocated`). Unknown keys at
 any level are errors (`ConfigError`). `load_config(path)`, `parse_config(doc)`, `parse_ports(spec)`,
 `resolve_prompt(style, task_id)`.
 
@@ -212,10 +222,12 @@ class RolloutSession:
 class PolicyEngine:
     def __init__(self, config: Config, worker_clients: dict[str, WorkerClient] | None = None,
                  rules: GripperRules | None = None)
-    async def start(self) -> None                # launch/connect workers concurrently, then check_profiles();
-                                                 # raises WorkerError if the default profile's worker cannot start
+    async def start(self) -> None                # start workers concurrently, then check_profiles(). Returns when
+                                                 # the default worker is ready (it is relaunched until it is) and every
+                                                 # other routed worker had one start attempt; raises WorkerError only
+                                                 # if the default worker hit a static error (WorkerConfigError)
     @property
-    def warm(self) -> bool                       # default worker ready (False again if it fails for good)
+    def warm(self) -> bool                       # start() done and the default worker not down (backoff/failed)
     async def step(self, sessions: list[RolloutSession], envs: list[EnvObs], chunk_k: int
                    ) -> tuple[np.ndarray, np.ndarray | None]
     def check_profiles(self) -> list[str]        # (added) profile vs worker info mismatches, logged as ERROR
@@ -227,23 +239,42 @@ discarded with its inpainting tail, so a returned chunk is always one contiguous
 shorter than chunk_k (chunk_k > execute_steps), the rest is padded with the last pose and base 0. Consumes the
 returned actions from the queue. Never raises: on any error it logs and returns hold actions (never zeros).
 **So the evaluator's `--replay-action-chunk-size K` must be <= `execute_steps` of every routed profile, and should
-divide it** (otherwise leftovers are dropped every plan).
+divide it** (otherwise leftovers are dropped every plan): results depend on K. The packaged README therefore states
+the K the metrics used (`b1k26-package --replay-chunk-size`, checked against the routed profiles with `--config`).
 
 Routing per session: `routing.profile_for(task_id)`, replaced by the default profile (with
-`fallback_to_default`) when the routed worker failed permanently or does not serve the task (`info.supported_tasks`,
-or `num_stages[t] == 0`). A task is never sent to a worker that does not serve it (the worker would reject the whole
-micro-batch). `WorkerClient` launches, health-polls, connects (`proxy=None`), fetches `info`, warms up and
-supervises a worker; a launched worker that exits is restarted (`max_restarts` per `restart_window_s`), one that
-times out 3 times in a row is killed and restarted, and a worker gets `PR_SET_PDEATHSIG` plus a parent watchdog.
+`fallback_to_default`) while the routed worker is down (`failed`: state backoff or failed) or when it does not serve
+the task (`info.supported_tasks`, or `num_stages[t] == 0`). A task is never sent to a worker that does not serve it
+(the worker would reject the whole micro-batch). *(changed)* A query whose worker is starting/restarting waits for it
+up to `engine.restart_wait_s` (`WorkerClient.wait_ready`) instead of getting an immediate hold: a hold uses up one of
+the episode's `max_steps`, waiting only wall time, of which both evaluators allow plenty.
+
+`WorkerClient` launches, health-polls, connects (`proxy=None`), fetches `info`, warms up and supervises a worker; a
+worker gets `PR_SET_PDEATHSIG` plus a parent watchdog, and the env `B1K26_LAUNCH_TOKEN`, which it echoes in `info` so
+the client never attaches to another server's worker on the same port. States: `init -> starting -> ready`;
+`ready -> restarting -> ready`; `-> backoff -> restarting`; `failed` (static error only); `stopped`. *(changed)*
+- A launched worker that exits is relaunched at once while `max_restarts` per `restart_window_s` allows, otherwise
+  after a capped exponential backoff (`restart_backoff_s` doubling to `restart_backoff_max_s`), forever: one burst
+  of faults never leaves an unattended container serving holds with `/healthz` 503 for good. One that times out 3
+  times in a row is killed and relaunched the same way.
+- Start-up: a worker still answering `/healthz` 503 (loading) at `startup_timeout_s` keeps loading up to 3x that;
+  one that does not answer at all is relaunched. The default profile's worker (`persistent`) is relaunched until it
+  is ready; any other routed worker gets one attempt, so `/healthz` never waits for its relaunch loop, and is then
+  retried in the background (its tasks use the default profile meanwhile).
+- Static errors are never retried (`WorkerConfigError`): the launch program is missing, or the worker exited with
+  status 2 (`b1k26.worker`: bad arguments, unknown backend, missing files, bad constructor arguments). Other load
+  failures exit 3 and are retried.
 
 Worker protocol (front -> worker, msgpack over websocket, one request in flight per connection):
 - `{"op": "info"}` -> `{"flavor", "action_horizon", "image_size", "num_stages": [100 ints] | None, "supports_inpaint",
-  "supports_stage"}` plus `"warm"`, `"backend"`, `"pid"` (added) and optionally `"supported_tasks"` (pibehavior)
+  "supports_stage"}` plus `"warm"`, `"backend"`, `"pid"`, `"launch_token"` (added) and optionally `"supported_tasks"`
+  (pibehavior)
 - `{"op": "warmup"}` -> `{"ok": True, "ms": float}`
 - `{"op": "infer", "items": [{"task_id", "prompt", "proprio" (61,), "images": {role: (S,S,3) uint8}, "stage": int|None, "initial_actions": (k,23)|None}]}`
   -> `{"chunks": [{"actions": (T,23) float32 absolute, "subtask_logits": (S,)|None}], "ms": float}`
 - A request may carry `"id"`; the reply echoes it, so the front drops late replies to requests that timed out.
 - An error answer is `{"error": str}`. It is never a text frame. `/healthz` on the worker port is 503 while loading.
+- A load failure ends the worker process: exit status 2 for configuration errors (never relaunched), 3 otherwise.
 
 ### server.py
 - Listens on every configured port with `websockets.asyncio.server.serve(..., compression=None, max_size=None,
@@ -267,7 +298,8 @@ Worker protocol (front -> worker, msgpack over websocket, one request in flight 
 - Logs one line per rollout (at reset or shutdown): steps, plans, failures, holds, corrections, compressed plans,
   replays, query and plan latency.
 - CLI: `b1k26-serve --config X [--ports P] [--host H] [--log-level L] [--check]`; exit 0 on SIGTERM/SIGINT, 1 if the
-  default worker cannot start, 2 on a bad config. `--check` validates the config and the launched workers'
+  default worker cannot start for a static reason (missing program, worker configuration error), 2 on a bad config.
+  Any other worker failure is retried (see engine.py), so a running server never exits on its own. `--check` validates the config and the launched workers'
   interpreters without starting anything (the Docker build runs it).
 
 ### Offline tools
@@ -277,19 +309,27 @@ Worker protocol (front -> worker, msgpack over websocket, one request in flight 
   videos to JSONs, no duplicates, no rollout_id != 0.
 - `selection.py`: per-task route selection from held-out results (IDs 311-320 or train-mode instances).
   Empirical-Bayes shrinkage toward each candidate's global mean. A per-task route switches away from the
-  globally best candidate only if the posterior gain exceeds a margin. It refuses results on reported IDs
+  globally best candidate only if the posterior gain exceeds a margin; only candidates with at least `min_n`
+  rollouts on the task compete (an unmeasured one never masks a measured one). The split-half CV scores up to 20
+  distinct splits (all of them for few ids) and reports `splits` and `split_sd`. It refuses results on reported IDs
   301-310 unless `--allow-reported` is given, and writes the decision log into the README.
-- `orchestrate.py`: job planning (tasks x instances -> workers, longest-processing-time-first by `max_steps`),
-  per-worker job files, a resume that skips jobs with an existing JSON, and crash detection (no JSON after the
-  process exits = infrastructure failure, re-queued once and logged).
+- `orchestrate.py`: job planning (tasks x instances -> workers, longest-processing-time-first by `max_steps`; each
+  worker runs its bucket shortest-first, so a run cut short loses the fewest rollouts; `--instances` is required
+  and the reported indices 0-9 need `--final`), per-worker job files, a resume that skips jobs with an existing
+  JSON, and failure handling: no JSON after the process exits = infrastructure failure, re-run once after
+  `--health-cmd` (which, if it fails or times out, stops the run); a policy failure (lost connection, bad reply,
+  query timeout in the evaluator log) is never re-run. Every attempt is logged in status.jsonl with its command,
+  wrapper and an over-time-budget flag; stopping the runner stops its evaluator.
 - `package.py`: the submission zip (metrics JSONs, wrapper `.py`, robot config, README with the exact
-  commands, SHA256 manifest), a video manifest, and a pre-submit check with `scoring.validate_submission`.
+  commands, SHA256 manifest), a video manifest, and a pre-submit check with `scoring.validate_submission`. It
+  refuses placeholders, a missing wrapper, a `--replay-chunk-size` that does not divide every routed profile's
+  `execute_steps` (`--config`), and a README whose wrapper or chunk size differs from the status log.
 
 ## Testing
 
 ```bash
 pip install -e '.[test]'            # + torch (CPU) for the evaluator-client tests, pyarrow for one gripper-rules test
-python -m pytest                     # ~480 tests, ~40 s on 4 CPU cores; skipped tests print their reason (-rs)
+python -m pytest                     # ~500 tests, ~1.5-2 min on 4 CPU cores; skipped tests print their reason (-rs)
 bash scripts/smoke_local.sh          # end-to-end: b1k26-serve (configs/fake.yaml, ports 18000-18003) + b1k26-probe
 ```
 Everything runs on CPU with no checkpoints. The suite also passes on Python 3.10 with websockets 14.1, the oldest
@@ -306,9 +346,9 @@ against stand-ins for their forks' policies (the forks themselves were exercised
 | engine | `test_engine.py` | chunk queue semantics (`action_chunk[:,0] == action` bit for bit, leftover discard, padding), corrections -> compression -> sanitize order, stage tracking and inpainting passed to the worker, micro-batching (one message and concurrent ports), timeouts and worker failures give holds, routing and fallback (failed worker, task not served), profile-vs-worker checks, sliding restart window |
 | worker | `test_worker.py`, `test_fake_backends.py` | worker protocol ops and errors (never text frames), health while loading, request ids and stale replies, CLI exit codes, deterministic fake backends |
 | front server | `test_server_protocol.py`, `test_server_unit.py`, `test_client_probe.py` | driven by **verbatim copies of the evaluator clients** (`tests/vendor/`, hash-checked): v3.9.3-post2 at N=1/3 with chunk sizes 0/8/20 (chunk replay bit-identical to per-step serving), 2026/eval reconnects (drop after/before stepping and mid-plan: no double step), MultiWebsocketPolicy over 3 ports, health gating, worker errors/timeouts, malformed observations, unbatched v3.9.2, metadata/reset-without-reply, half-open takeover, idle group eviction; the probe's own violation detection |
-| processes | `test_launch.py`, `test_integration.py` | `b1k26-serve` with `configs/fake.yaml`: launched worker restart after SIGKILL (holds meanwhile), sliding restart budget then permanent failure (/healthz 503), SIGTERM exit 0 stops the worker, SIGKILL of the front takes the worker down, exit 1/2 on worker/config failure, `--check`; `scripts/smoke_local.sh` end to end on free ports; a worker that serves only tasks 0-49 behind the real worker protocol (unserved routes fall back, never reach it); every console script resolves and prints `--help`; the backend registry matches its classes |
+| processes | `test_launch.py`, `test_integration.py` | `b1k26-serve` with `configs/fake.yaml`: launched worker restart after SIGKILL (queries wait for it; holds with `restart_wait_s: 0`), sliding restart budget then backoff and recovery (/healthz 503 then 200), a slow-loading worker kept past `startup_timeout_s`, transient load failures retried until ready, a routed worker's single start attempt and background recovery, two servers from one config on one host (worker port relocation), SIGTERM exit 0 stops the worker, SIGKILL of the front takes the worker down, exit 1/2 on static worker/config failure, `--check`; `scripts/smoke_local.sh` and `scripts/restart_server.sh` end to end on free ports; a worker that serves only tasks 0-49 behind the real worker protocol (unserved routes fall back, never reach it); every console script resolves and prints `--help`; the backend registry matches its classes; Dockerfile offline layout and `docker/check_offline.sh`; example configs' checkpoint paths match `scripts/download_checkpoints.py` |
 | backends | `test_backends_openpi.py`, `test_backends_rlc_groot.py` | input dicts identical to each fork's wrapper, info contracts, prompt/gripper/state conventions, batching, error propagation, env scripts' arguments, example configs |
-| offline | `test_offline_tools.py` | scoring formulas, submission validation, route selection, job planning/resume, packaging |
+| offline | `test_offline_tools.py` | scoring formulas, submission validation, route selection (distinct CV splits, eligible argmax), job planning (shortest-first buckets, `--final`), runner (resume, infrastructure retries, no policy-failure retries, health-command failure stops, time-budget flag, evaluator stopped with the runner), collect, packaging (chunk note/K check, wrapper, placeholders, status-log cross-check) |
 
 Performance (CPU, 4 cores, `configs/fake.yaml`, measured with the probe and `server_timing`): a full-resolution
 RGBD observation is 7.8 MB. The transport floor (client packing + websocket, against a trivial echo server) is

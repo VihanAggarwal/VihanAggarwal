@@ -29,6 +29,7 @@ class RolloutStats:
     compressed: int = 0  # plans executed with temporal compression
     replays: int = 0  # cached responses re-sent after a reconnect
     padded: int = 0  # actions padded because a plan was shorter than the requested chunk
+    restart_wait_ms: float = 0.0  # time queries spent waiting for a (re)starting worker instead of holding
     # Compact float arrays (a rollout can have tens of thousands of queries).
     plan_ms: array.array = field(default_factory=lambda: array.array("f"))
     query_ms: array.array = field(default_factory=lambda: array.array("f"))  # server-side time per query
@@ -45,7 +46,7 @@ class RolloutStats:
         return {
             "queries": self.queries, "plans": self.plans, "plan_failures": self.plan_failures,
             "hold_steps": self.hold_steps, "corrections": self.corrections, "compressed": self.compressed,
-            "replays": self.replays, "padded": self.padded,
+            "replays": self.replays, "padded": self.padded, "restart_wait_s": round(self.restart_wait_ms / 1e3, 1),
             "query_ms_mean": round(qm, 2), "query_ms_p50": round(q50, 2), "query_ms_max": round(qx, 2),
             "plan_ms_mean": round(pm, 2), "plan_ms_max": round(px, 2),
             "wall_s": round(time.monotonic() - self.started, 1),

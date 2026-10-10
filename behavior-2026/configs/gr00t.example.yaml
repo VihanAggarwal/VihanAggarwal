@@ -6,7 +6,7 @@
 #
 # Setup (docs/BACKENDS.md#gr00t):
 #   HF_TOKEN=... scripts/envs/gr00t.sh --prefix /opt/envs/gr00t --download-backbone   # nvidia/Cosmos-Reason2-2B is gated
-#   hf download kmy17518/gr00t-n1.7-b1k-multitask --include "checkpoint-238000/*" --local-dir /ckpt/gr00t-multitask
+#   python scripts/download_checkpoints.py --dest /ckpt gr00t_multitask   (-> /ckpt/gr00t_multitask/checkpoint-238000)
 #   gdown 1OXNm3SPLvWOSJR1e8In6xHMHxOYDp789 -O radio_gr00t.zip && unzip radio_gr00t.zip -d /ckpt/gr00t-radio
 #     (6.4 GB; the zip's top folder is turning_on_radio_GR00T-checkpoint-150000/)
 #
@@ -29,7 +29,7 @@ workers:
       - --backend
       - gr00t
       - --checkpoint
-      - /ckpt/gr00t-multitask/checkpoint-238000
+      - /ckpt/gr00t_multitask/checkpoint-238000
       - --port
       - "9401"
       - --backend-kwargs

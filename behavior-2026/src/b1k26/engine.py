@@ -1,14 +1,16 @@
 """Planning engine of the front server: worker clients, micro-batching scheduler and per-session planning.
 
 - ``WorkerClient``: async websocket client for one worker (b1k26.worker). Optionally launches the worker
-  process, waits for its ``/healthz``, fetches ``info``, warms it up if needed, supervises it (one restart by
-  default if it dies) and turns every failure into ``WorkerError``. One request in flight per connection.
+  process (moving it to a free loopback port if its port is taken), waits for its ``/healthz``, fetches ``info``,
+  warms it up if needed, supervises it (relaunched at once while its restart budget allows, then with backoff; given
+  up only on a configuration error) and turns every failure into ``WorkerError``. One request in flight per
+  connection.
 - ``InferenceScheduler``: one per worker. Collects concurrent plan requests and sends them as micro-batches of
   up to ``max_batch`` items, waiting at most ``batch_wait_ms`` for stragglers when the worker was idle.
 - ``PolicyEngine``: maps every rollout session to a profile, plans when the session's queue cannot serve the
   requested chunk, post-processes (gripper corrections -> compression -> sanitize), and returns exactly the
-  actions the evaluator executes. It never raises: any failure yields hold actions (never zeros) and the session
-  plans again on its next query.
+  actions the evaluator executes. A query whose worker is (re)starting waits for it (``restart_wait_s``). It never
+  raises: any failure yields hold actions (never zeros) and the session plans again on its next query.
 
 Chunk replay semantics (docs/ARCHITECTURE.md, engine.py): with ``chunk_k = K > 1`` the evaluator executes K
 returned actions open loop. A session plans whenever its queue holds fewer than ``max(K, 1)`` actions; a partial
@@ -25,6 +27,7 @@ import importlib
 import itertools
 import logging
 import os
+import secrets
 import signal
 import socket
 import sys
@@ -46,7 +49,10 @@ from b1k26.stage import StageTracker
 logger = logging.getLogger("b1k26.engine")
 
 PARENT_PID_ENV = "B1K26_PARENT_PID"  # same name as b1k26.worker.PARENT_PID_ENV (not imported: keep worker light)
+LAUNCH_TOKEN_ENV = "B1K26_LAUNCH_TOKEN"  # b1k26.worker echoes it in info: proves the worker on the port is ours
+EXIT_CONFIG_ERROR = 2  # b1k26.worker exit status for configuration errors (never relaunched)
 HANG_TIMEOUTS_BEFORE_RESTART = 3  # consecutive request timeouts after which a launched worker is restarted
+STARTUP_LOADING_GRACE = 3.0  # a worker still loading (/healthz 503) gets up to this x startup_timeout_s
 _TERMINATE_GRACE_S = 10.0
 
 
@@ -60,6 +66,11 @@ class WorkerTimeout(WorkerError):
 
 class _ProcessExited(WorkerError):
     """The launched worker process exited during start-up."""
+
+
+class WorkerConfigError(WorkerError):
+    """A static problem that relaunching cannot fix: the launch program is missing, or the worker exited with
+    status 2 (bad arguments, unknown backend, missing checkpoint files)."""
 
 
 # ----------------------------------------------------------------------------------------------------------
@@ -108,6 +119,14 @@ def _port_in_use(host: str, port: int) -> bool:
         return False
 
 
+def _free_loopback_port(host: str = "127.0.0.1") -> int:
+    """A port the OS reports free on the loopback interface (bound and released at once)."""
+    family, addr = (socket.AF_INET6, "::1") if ":" in host else (socket.AF_INET, "127.0.0.1")
+    with socket.socket(family, socket.SOCK_STREAM) as s:
+        s.bind((addr, 0))
+        return int(s.getsockname()[1])
+
+
 def _make_preexec() -> Callable[[], None] | None:
     """On Linux, make a launched worker receive SIGTERM when the front server dies (PR_SET_PDEATHSIG)."""
     if not sys.platform.startswith("linux"):
@@ -150,14 +169,26 @@ class _RateLimitedLog:
 class WorkerClient:
     """Async client of one worker; launches and supervises it when the config has ``launch``.
 
-    States: init -> starting -> ready; ready -> restarting -> ready (launched workers that died); any -> failed
-    (permanently: start-up failed or restarts exhausted); stopped after ``close()``.
+    States: init -> starting -> ready; ready -> restarting -> ready (a launched worker that died is relaunched at
+    once while ``max_restarts`` per ``restart_window_s`` allows); -> backoff -> restarting (beyond that budget, or
+    after a failed start: relaunch after a capped exponential backoff, forever); -> failed only on a static error
+    (``WorkerConfigError``: missing program, worker exit status 2) or for a non-persistent endpoint-only worker that
+    could not be reached; stopped after ``close()``. ``failed`` (the property) is true in backoff and failed: the
+    worker is down and not expected back soon, so its tasks fall back to the default profile.
+
+    ``persistent`` (set by PolicyEngine for the default profile's worker): ``start()`` keeps relaunching until the
+    worker is ready (at once after a crash while the budget allows, else with backoff) and raises only on a static
+    error. A non-persistent worker gets exactly one start attempt, so /healthz never waits for a routed worker's
+    relaunch loop; if it fails, ``start()`` raises and a launched worker is retried in the background with backoff.
     """
 
-    def __init__(self, cfg: WorkerConfig, connect_timeout_s: float = 10.0, health_poll_s: float = 0.25):
+    def __init__(self, cfg: WorkerConfig, connect_timeout_s: float = 10.0, health_poll_s: float = 0.25,
+                 persistent: bool = False):
         self.cfg = cfg
         self.name = cfg.name
-        self.state = "init"
+        self._state = "init"
+        self._state_waiters: list[asyncio.Future] = []
+        self.persistent = persistent
         self.info: dict[str, Any] = {}
         self.restarts = 0
         self.last_error: str | None = None
@@ -166,20 +197,56 @@ class WorkerClient:
         self.health_poll_s = health_poll_s
         self._ws: Any = None
         self._proc: asyncio.subprocess.Process | None = None
+        self._launch_token: str | None = None
         self._lock = asyncio.Lock()
         self._req_ids = itertools.count(1)
         self._supervisor: asyncio.Task | None = None
         self._closing = False
         self._restart_times: collections.deque[float] = collections.deque()  # monotonic times of recent restarts
+        self._backoff_s = float(cfg.restart_backoff_s)
 
     # ---- state -------------------------------------------------------------------------------------------
+    @property
+    def state(self) -> str:
+        return self._state
+
+    @state.setter
+    def state(self, value: str) -> None:
+        self._state = value
+        waiters, self._state_waiters = self._state_waiters, []
+        for fut in waiters:
+            if not fut.done():
+                fut.set_result(None)
+
     @property
     def ready(self) -> bool:
         return self.state == "ready"
 
     @property
     def failed(self) -> bool:
-        return self.state == "failed"
+        """Down and not expected back soon: in backoff (retried later) or failed for good."""
+        return self.state in ("backoff", "failed")
+
+    @property
+    def coming_up(self) -> bool:
+        """Being (re)started right now: a query may wait for it (PolicyEngine restart_wait_s)."""
+        return self.state in ("starting", "restarting")
+
+    async def wait_ready(self, timeout: float) -> bool:
+        """Wait up to ``timeout`` s while the worker is starting/restarting; True if it is ready."""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + max(float(timeout), 0.0)
+        while self.coming_up:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                break
+            fut = loop.create_future()
+            self._state_waiters.append(fut)
+            try:
+                await asyncio.wait_for(fut, remaining)
+            except asyncio.TimeoutError:
+                break
+        return self.ready
 
     @property
     def pid(self) -> int | None:
@@ -205,8 +272,8 @@ class WorkerClient:
         return True
 
     def _restart_allowed(self, now: float | None = None) -> bool:
-        """At most ``max_restarts`` restarts within any ``restart_window_s`` (a sliding window), so one crash a
-        day never exhausts the budget of an unattended run while a crash loop still gives up."""
+        """At most ``max_restarts`` immediate restarts within any ``restart_window_s`` (a sliding window), so one
+        crash a day is always restarted at once while a crash loop is slowed down to the backoff schedule."""
         now = time.monotonic() if now is None else now
         window = float(self.cfg.restart_window_s)
         while self._restart_times and now - self._restart_times[0] > window:
@@ -217,49 +284,84 @@ class WorkerClient:
         self._restart_times.append(time.monotonic() if now is None else now)
         self.restarts += 1
 
+    async def _backoff_sleep(self) -> None:
+        """State backoff for the current delay (logged), then double the delay up to restart_backoff_max_s."""
+        delay = self._backoff_s
+        self.state = "backoff"
+        logger.error("worker %s is down (%s); %d restart(s) within %.0f s already; relaunching in %.0f s",
+                     self.name, self.last_error, len(self._restart_times), self.cfg.restart_window_s, delay)
+        await asyncio.sleep(delay)
+        self._backoff_s = min(self._backoff_s * 2.0, float(self.cfg.restart_backoff_max_s))
+
     # ---- lifecycle ---------------------------------------------------------------------------------------
     async def start(self) -> None:
-        """Bring the worker up (launch, health, connect, info, warmup). Raises WorkerError; state is then failed."""
-        attempts = 1 + (self.cfg.max_restarts if self.cfg.launch else 0)
-        for attempt in range(attempts):
+        """Bring the worker up (launch, health, connect, info, warmup); see the class docstring for retries.
+
+        Raises WorkerConfigError on a static error, WorkerError when a non-persistent worker's start failed."""
+        while True:
             try:
                 await self._bring_up()
                 break
-            except _ProcessExited as e:
-                self.last_error = str(e)
-                if attempt + 1 < attempts and not self._closing:
-                    self._record_restart()
-                    logger.error("worker %s: %s; relaunching (%d/%d)", self.name, e, self.restarts,
-                                 self.cfg.max_restarts)
-                    continue
-                self.state = "failed"
+            except asyncio.CancelledError:
+                await self._kill()
                 raise
-            except BaseException as e:
-                self.last_error = f"{type(e).__name__}: {e}"
+            except WorkerConfigError as e:
+                self.last_error = str(e)
                 self.state = "failed"
                 await self._kill()
-                if isinstance(e, WorkerError):
-                    raise
-                if isinstance(e, asyncio.CancelledError):
-                    raise
-                raise WorkerError(f"worker {self.name} failed to start: {self.last_error}") from e
+                logger.error("worker %s: %s (not retried)", self.name, e)
+                raise
+            except Exception as e:
+                self.last_error = str(e) if isinstance(e, WorkerError) else f"{type(e).__name__}: {e}"
+                await self._kill()
+                if self._closing:
+                    self.state = "failed"
+                    if isinstance(e, WorkerError):
+                        raise
+                    raise WorkerError(self.last_error) from e
+                if self.persistent and self.cfg.launch and isinstance(e, _ProcessExited) and self._restart_allowed():
+                    self._record_restart()
+                    logger.error("worker %s: %s; relaunching (%d/%d)", self.name, e, len(self._restart_times),
+                                 self.cfg.max_restarts)
+                    continue
+                if self.persistent:
+                    await self._backoff_sleep()
+                    if self.cfg.launch:
+                        self._record_restart()
+                    continue
+                if self.cfg.launch:
+                    # Retried in the background (backoff first); its tasks fall back to the default meanwhile.
+                    self.state = "backoff"
+                    self._ensure_supervisor()
+                else:
+                    self.state = "failed"
+                raise WorkerError(f"worker {self.name} failed to start: {self.last_error}") from None
+        self._backoff_s = float(self.cfg.restart_backoff_s)
         if self.cfg.launch and not self._closing:
+            self._ensure_supervisor()
+
+    def _ensure_supervisor(self) -> None:
+        if self._supervisor is None or self._supervisor.done():
             self._supervisor = asyncio.get_running_loop().create_task(self._supervise())
 
     async def _bring_up(self) -> None:
         self.state = "starting"
         loop = asyncio.get_running_loop()
-        deadline = loop.time() + self.cfg.startup_timeout_s
         t0 = time.monotonic()
         await self._close_ws()
         if self.cfg.launch:
             await self._launch()
-        await self._wait_healthy(deadline)
-        await self._connect(min(self.connect_timeout_s, max(deadline - loop.time(), 1.0)))
-        info = await self._request({"op": "info"}, max(deadline - loop.time(), 5.0))
+        await self._wait_healthy(loop.time() + self.cfg.startup_timeout_s)
+        await self._connect(self.connect_timeout_s)
+        info = await self._request({"op": "info"}, 30.0)
+        token = info.get("launch_token")
+        if self._launch_token is not None and token is not None and token != self._launch_token:
+            # Another front server's worker answers on this port (two servers raced for it): ours could not bind.
+            raise _ProcessExited(f"worker {self.name}: {self.cfg.endpoint} is answered by another server's worker "
+                                 f"(pid {info.get('pid')})")
         info = self._validate_info(info)
         if not info.get("warm", True):
-            reply = await self._request({"op": "warmup"}, max(deadline - loop.time(), 5.0))
+            reply = await self._request({"op": "warmup"}, max(self.cfg.startup_timeout_s, 30.0))
             logger.info("worker %s warmed up in %.0f ms", self.name, float(reply.get("ms", 0.0)))
         self.info = info
         self.consecutive_timeouts = 0
@@ -270,40 +372,66 @@ class WorkerClient:
 
     async def _launch(self) -> None:
         assert self.cfg.launch is not None and self.cfg.port is not None
+        await self._kill()  # never leave a previous instance of ours running
         host = self.cfg.host
         for _ in range(50):  # a previous instance may still be shutting down
             if not _port_in_use(host, self.cfg.port):
                 break
             await asyncio.sleep(0.1)
         else:
-            raise WorkerError(f"worker {self.name}: port {self.cfg.port} is already in use (stale worker process?)")
+            if not self.cfg.relocatable:
+                raise WorkerError(f"worker {self.name}: port {self.cfg.port} is already in use (stale worker process "
+                                  "or another server on this host?)")
+            new_port = _free_loopback_port(host)
+            logger.warning("worker %s: port %d is in use (another server on this host, or a stale worker); using "
+                           "free port %d instead", self.name, self.cfg.port, new_port)
+            self.cfg = self.cfg.relocated(new_port)
         env = dict(os.environ)
         env.update(self.cfg.env)
         env[PARENT_PID_ENV] = str(os.getpid())
+        self._launch_token = secrets.token_hex(8)
+        env[LAUNCH_TOKEN_ENV] = self._launch_token
         logger.info("launching worker %s: %s", self.name, " ".join(self.cfg.launch))
-        self._proc = await asyncio.create_subprocess_exec(
-            *self.cfg.launch, env=env, cwd=self.cfg.cwd, stdin=asyncio.subprocess.DEVNULL,
-            preexec_fn=_make_preexec(),
-        )
+        try:
+            self._proc = await asyncio.create_subprocess_exec(
+                *self.cfg.launch, env=env, cwd=self.cfg.cwd, stdin=asyncio.subprocess.DEVNULL,
+                preexec_fn=_make_preexec(),
+            )
+        except OSError as e:  # missing or non-executable program, bad cwd: relaunching cannot fix it
+            raise WorkerConfigError(f"worker {self.name}: cannot launch {self.cfg.launch[0]!r}: {e}") from None
 
     async def _wait_healthy(self, deadline: float) -> None:
+        """Poll /healthz until 200. A worker that still answers 503 (loading) at ``deadline`` gets up to
+        STARTUP_LOADING_GRACE x startup_timeout_s in total; one that does not answer at all is given up on."""
         loop = asyncio.get_running_loop()
         host, port = self.cfg.host, self.cfg.endpoint_port
+        hard_deadline = deadline + (STARTUP_LOADING_GRACE - 1.0) * self.cfg.startup_timeout_s
         last_log = loop.time()
         while True:
             if self._proc is not None and self._proc.returncode is not None:
-                raise _ProcessExited(f"worker {self.name} exited with status {self._proc.returncode} during start-up")
+                rc = self._proc.returncode
+                if rc == EXIT_CONFIG_ERROR:
+                    raise WorkerConfigError(f"worker {self.name} exited with status {rc} (configuration error: bad "
+                                            "arguments, unknown backend or missing files; see its log)")
+                raise _ProcessExited(f"worker {self.name} exited with status {rc} during start-up")
             status = await http_status(host, port, "/healthz", timeout=2.0)
             if status == 200:
                 return
             now = loop.time()
             if now >= deadline:
-                raise WorkerError(f"worker {self.name} not healthy after {self.cfg.startup_timeout_s:.0f} s "
-                                  f"(last /healthz status: {status})")
-            if now - last_log > 30.0:
+                if status != 503 or now >= hard_deadline:
+                    waited = now - deadline + self.cfg.startup_timeout_s
+                    raise WorkerError(f"worker {self.name} not healthy after {waited:.0f} s (last /healthz status: "
+                                      f"{status})")
+                if now - last_log > 60.0 or last_log < deadline:
+                    logger.warning("worker %s still loading after startup_timeout_s %.0f s (/healthz 503); waiting up "
+                                   "to %.0f s in total", self.name, self.cfg.startup_timeout_s,
+                                   STARTUP_LOADING_GRACE * self.cfg.startup_timeout_s)
+                    last_log = now
+            elif now - last_log > 30.0:
                 logger.info("waiting for worker %s at %s:%d (/healthz: %s)", self.name, host, port, status)
                 last_log = now
-            await asyncio.sleep(min(self.health_poll_s, max(deadline - now, 0.01)))
+            await asyncio.sleep(self.health_poll_s)
 
     async def _connect(self, timeout: float) -> None:
         from websockets.asyncio.client import connect
@@ -344,39 +472,46 @@ class WorkerClient:
                 pass
 
     async def _supervise(self) -> None:
-        """Relaunch a launched worker that exits unexpectedly (at most max_restarts times per restart_window_s)."""
+        """Keep a launched worker up: whenever it is down, relaunch it at once while the restart budget allows,
+        otherwise after the backoff delay. Gives up only on a static error (WorkerConfigError)."""
         while not self._closing:
-            proc = self._proc
-            if proc is None:
-                return
-            rc = await proc.wait()
-            if self._closing:
-                return
-            self.last_error = f"process exited with status {rc}"
+            if self.state == "ready":
+                proc = self._proc
+                if proc is None:
+                    return
+                rc = await proc.wait()
+                if self._closing:
+                    return
+                self.state = "restarting"  # before any await: queries must not use the dead worker
+                self.last_error = f"process exited with status {rc}"
+                logger.error("worker %s exited with status %s", self.name, rc)
             await self._close_ws()
-            if not self._restart_allowed():
-                logger.error("worker %s exited with status %s; %d restart(s) within %.0f s already, giving up",
-                             self.name, rc, len(self._restart_times), self.cfg.restart_window_s)
-                self.state = "failed"
-                return
+            await self._kill()
+            if self.state != "backoff" and self._restart_allowed():
+                logger.error("worker %s: restarting (%d in the last %.0f s, limit %d; %d total)", self.name,
+                             len(self._restart_times) + 1, self.cfg.restart_window_s, self.cfg.max_restarts,
+                             self.restarts + 1)
+            else:
+                await self._backoff_sleep()
+                if self._closing:
+                    return
             self._record_restart()
             self.state = "restarting"
-            logger.error("worker %s exited with status %s; restarting (%d in the last %.0f s, limit %d; %d total)",
-                         self.name, rc, len(self._restart_times), self.cfg.restart_window_s, self.cfg.max_restarts,
-                         self.restarts)
             try:
                 await self._bring_up()
-            except _ProcessExited as e:
-                logger.error("worker %s: %s", self.name, e)
-                continue  # the loop sees the dead process and decides about another restart
+                self._backoff_s = float(self.cfg.restart_backoff_s)
             except asyncio.CancelledError:
                 raise
-            except Exception as e:
-                self.last_error = f"{type(e).__name__}: {e}"
-                logger.error("worker %s restart failed: %s", self.name, self.last_error)
+            except WorkerConfigError as e:
+                self.last_error = str(e)
+                logger.error("worker %s: %s; giving up", self.name, e)
                 self.state = "failed"
                 await self._kill()
                 return
+            except Exception as e:
+                self.last_error = str(e) if isinstance(e, WorkerError) else f"{type(e).__name__}: {e}"
+                logger.error("worker %s restart failed: %s", self.name, self.last_error)
+                self.state = "restarting"  # the loop relaunches it (at once or after a backoff)
 
     async def close(self) -> None:
         self._closing = True
@@ -587,14 +722,20 @@ class PolicyEngine:
                  rules: GripperRules | None = None):
         self.config = config
         used = config.used_workers()
+        default_worker = config.default_profile.worker
         if worker_clients is None:
-            worker_clients = {name: WorkerClient(config.workers[name]) for name in used}
+            worker_clients = {name: WorkerClient(config.workers[name], persistent=(name == default_worker))
+                              for name in used}
         missing = [n for n in used if n not in worker_clients]
         if missing:
             raise ValueError(f"no WorkerClient for worker(s) {missing}")
+        if isinstance(worker_clients[default_worker], WorkerClient):
+            # The default profile's worker is never given up (except on a static error): without it nothing plans.
+            worker_clients[default_worker].persistent = True
         self.clients = worker_clients
         self.rules = rules if rules is not None else GripperRules.load(config.engine.gripper_rules)
         self.plan_timeout_s = float(config.engine.plan_timeout_s)
+        self.restart_wait_s = float(config.engine.restart_wait_s)
         self.schedulers: dict[str, InferenceScheduler] = {}
         for name in used:
             wcfg = config.workers.get(name)
@@ -622,12 +763,15 @@ class PolicyEngine:
 
     @property
     def warm(self) -> bool:
-        """True once start() finished with the default profile's worker ready (and it has not failed since)."""
+        """True once start() finished, while the default profile's worker is not down (backoff/failed)."""
         return self._warm and not self.clients[self.default_worker].failed
 
     async def start(self) -> None:
-        """Start every worker that routing can reach (concurrently). Raises WorkerError if the default profile's
-        worker cannot start; other workers may fail (their tasks then fall back to the default profile)."""
+        """Start every worker that routing can reach (concurrently) and return when each has finished its start:
+        the default profile's worker keeps relaunching until it is ready, the others get one attempt (failed ones
+        are retried in the background; their tasks fall back to the default profile meanwhile). /healthz therefore
+        waits for every routed worker's first start attempt. Raises WorkerError only if the default worker cannot
+        start for a static reason (WorkerConfigError: missing program, configuration error)."""
         names = self.config.used_workers()
         t0 = time.monotonic()
         results = await asyncio.gather(*(self.clients[n].start() for n in names), return_exceptions=True)
@@ -635,7 +779,8 @@ class PolicyEngine:
             if isinstance(r, BaseException):
                 logger.error("worker %s failed to start: %s", n, r)
         default = self.clients[self.default_worker]
-        if not default.ready:
+        default_result = results[names.index(self.default_worker)]
+        if isinstance(default_result, BaseException) or default.state == "failed":
             self.start_error = f"default worker {self.default_worker} failed: {getattr(default, 'last_error', None)}"
             raise WorkerError(self.start_error)
         self.config_problems = self.check_profiles()
@@ -867,6 +1012,17 @@ class PolicyEngine:
         try:
             prof = self._effective_profile(s)
             client = self.clients[prof.worker]
+            if not client.ready and getattr(client, "coming_up", False) and self.restart_wait_s > 0:
+                # The worker is being (re)started: wait for it instead of holding. A hold costs one of the
+                # episode's max_steps per step; waiting only costs wall time, of which the evaluator allows plenty
+                # (post2: no limit; 2026/eval: max_steps seconds against ~0.1-0.2 s of simulation per step).
+                self._log.warning(f"wait-{prof.worker}", "worker %s is %s: queries wait up to %.0f s for it",
+                                  prof.worker, client.state, self.restart_wait_s)
+                t_wait = time.monotonic()
+                await client.wait_ready(self.restart_wait_s)
+                s.stats.restart_wait_ms += (time.monotonic() - t_wait) * 1e3
+                prof = self._effective_profile(s)  # it may have gone to backoff: fall back to the default
+                client = self.clients[prof.worker]
             if not client.ready:
                 raise WorkerError(f"worker {prof.worker} is {client.state}")
             if not client.serves(task_id):

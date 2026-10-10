@@ -118,6 +118,39 @@ def test_worker_validation() -> None:
     assert "restart_window_s" in _bad(lambda d: d["workers"]["b"].update(restart_window_s=0))
 
 
+def test_launched_worker_port_can_be_relocated() -> None:
+    """protocol-1: a launched loopback worker can move to another port; argv ({port} or a literal --port value),
+    port and endpoint move together."""
+    d = doc()
+    d["workers"]["b"] = {"launch": ["x", "--port", "9400", "--log", "w{port}.log"], "endpoint": "ws://127.0.0.1:9400",
+                         "restart_backoff_s": 2, "restart_backoff_max_s": 20}
+    w = parse_config(d).workers["b"]
+    assert w.relocatable and (w.restart_backoff_s, w.restart_backoff_max_s) == (2.0, 20.0)
+    m = w.relocated(9555)
+    assert m.launch == ["x", "--port", "9555", "--log", "w9555.log"] and m.port == 9555
+    assert m.endpoint == "ws://127.0.0.1:9555" and m.endpoint_port == 9555
+    assert m.relocated(9600).launch == ["x", "--port", "9600", "--log", "w9600.log"]  # from the template again
+    assert w.launch == ["x", "--port", "9400", "--log", "w9400.log"]  # the original is unchanged
+    # Not on loopback, or no way to pass the port: not relocatable.
+    d["workers"]["b"] = {"launch": ["x", "--port", "{port}"], "endpoint": "ws://10.1.2.3:9400"}
+    assert not parse_config(d).workers["b"].relocatable
+    d["workers"]["b"] = {"launch": ["x"], "port": 9400}
+    assert not parse_config(d).workers["b"].relocatable
+    assert parse_config(d).workers["a"].relocatable is False  # endpoint-only
+    assert "restart_backoff_max_s" in _bad(lambda d: d["workers"]["b"].update(restart_backoff_s=30,
+                                                                              restart_backoff_max_s=10))
+
+
+def test_restart_wait_must_fit_the_query_cap() -> None:
+    cfg = parse_config(doc())
+    assert cfg.engine.restart_wait_s == 420.0 and cfg.engine.plan_timeout_s == 120.0
+    assert "600" in _bad(lambda d: d.update(engine={"restart_wait_s": 500}))
+    assert "600" in _bad(lambda d: d.update(engine={"plan_timeout_s": 300, "restart_wait_s": 300}))
+    d = doc()
+    d["engine"] = {"plan_timeout_s": 300, "restart_wait_s": 0}
+    assert parse_config(d).engine.restart_wait_s == 0.0
+
+
 def test_profile_value_validation() -> None:
     assert "resize" in _bad(lambda d: d["profiles"]["pa"].update(resize="cubic_spline"))
     assert "prompt" in _bad(lambda d: d["profiles"]["pa"].update(prompt="fancy"))

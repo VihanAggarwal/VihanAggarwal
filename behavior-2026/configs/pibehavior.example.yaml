@@ -7,9 +7,9 @@
 # Setup (docs/BACKENDS.md#pibehavior):
 #   scripts/envs/pibehavior.sh --prefix /opt/envs/pibehavior-2026 --fork jackliu2026
 #   scripts/envs/pibehavior.sh --prefix /opt/envs/pibehavior-2025 --fork rlc2025
-#   hf download JackLiu0406/meta-SFT-checkpoints --include "meta100-1epoch/step139999/params/*" \
-#       "meta100-1epoch/step139999/assets/*" --local-dir /ckpt/meta-sft        # gated: request access first
-#   hf download IliaLarchenko/behavior_submission --local-dir /ckpt/rlc        # checkpoint_1..4 (~51 GB)
+#   HF_TOKEN=... python scripts/download_checkpoints.py --dest /ckpt jackliu_meta100   # gated: request access first
+#       (-> /ckpt/jackliu_meta100/meta100-1epoch/step139999)
+#   python scripts/download_checkpoints.py --dest /ckpt rlc_2025       # -> /ckpt/rlc_2025/checkpoint_1..4 (~51 GB)
 #
 # Worker kwargs are one JSON object (--backend-kwargs) for
 # b1k26.backends.pibehavior.PiBehaviorBackend(checkpoint=..., **kwargs); every key is optional.
@@ -30,7 +30,7 @@ workers:
       - --backend
       - pibehavior
       - --checkpoint
-      - /ckpt/meta-sft/meta100-1epoch/step139999
+      - /ckpt/jackliu_meta100/meta100-1epoch/step139999
       - --port
       - "9301"
       - --backend-kwargs
@@ -52,10 +52,10 @@ workers:
       # RLC's task -> checkpoint table (README / task_checkpoint_mapping.json). warmup_all loads each of the four
       # checkpoints once at startup (fails fast on a broken download) and leaves checkpoint_2 (task 0) resident.
       - '{"task_checkpoint_mapping": {"checkpoints": {
-            "checkpoint_1": {"path": "/ckpt/rlc/checkpoint_1", "tasks": [2, 3, 5, 6, 10, 11, 13, 14, 15, 19, 23, 24, 25, 28, 29, 34, 42, 44, 47, 48]},
-            "checkpoint_2": {"path": "/ckpt/rlc/checkpoint_2", "tasks": [0, 1, 7, 8, 9, 12, 16, 17, 18, 20, 21, 22, 26, 30, 43, 45]},
-            "checkpoint_3": {"path": "/ckpt/rlc/checkpoint_3", "tasks": [4, 27, 31, 32, 33, 35, 36, 37, 38, 39, 41, 46, 49]},
-            "checkpoint_4": {"path": "/ckpt/rlc/checkpoint_4", "tasks": [40]}}},
+            "checkpoint_1": {"path": "/ckpt/rlc_2025/checkpoint_1", "tasks": [2, 3, 5, 6, 10, 11, 13, 14, 15, 19, 23, 24, 25, 28, 29, 34, 42, 44, 47, 48]},
+            "checkpoint_2": {"path": "/ckpt/rlc_2025/checkpoint_2", "tasks": [0, 1, 7, 8, 9, 12, 16, 17, 18, 20, 21, 22, 26, 30, 43, 45]},
+            "checkpoint_3": {"path": "/ckpt/rlc_2025/checkpoint_3", "tasks": [4, 27, 31, 32, 33, 35, 36, 37, 38, 39, 41, 46, 49]},
+            "checkpoint_4": {"path": "/ckpt/rlc_2025/checkpoint_4", "tasks": [40]}}},
           "num_steps": 20, "max_resident": 1, "warmup_inpaint_steps": 4, "warmup_all": true, "mem_fraction": 0.45}'
     startup_timeout_s: 1800
 

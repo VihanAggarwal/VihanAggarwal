@@ -174,11 +174,20 @@ def test_worker_client_start_fails_when_unreachable() -> None:
         lt.stop()
 
 
-def test_worker_cli_load_failure_exits_3() -> None:
-    port = free_port()
-    out = subprocess.run([sys.executable, "-m", "b1k26.worker", "--backend", "fake_replay", "--port", str(port),
-                          "--backend-arg", "path=/nonexistent/actions.npy"], capture_output=True, timeout=60)
-    assert out.returncode == 3
+def test_worker_cli_load_failure_exit_status(tmp_path) -> None:
+    """Exit status 2 for configuration errors a relaunch cannot fix (the front server gives up), 3 for other load
+    failures (the front server relaunches)."""
+    def run(*args: str) -> int:
+        return subprocess.run([sys.executable, "-m", "b1k26.worker", "--port", str(free_port()), *args],
+                              capture_output=True, timeout=60).returncode
+
+    assert run("--backend", "fake_replay", "--backend-arg", "path=/nonexistent/actions.npy") == 2  # missing file
+    assert run("--backend", "no_such_backend") == 2
+    assert run("--backend", "fake_sine", "--backend-kwargs", "{not json") == 2
+    assert run("--backend", "fake_sine", "--backend-arg", "no_such_kwarg=1") == 2  # TypeError in the constructor
+    flag = tmp_path / "fail"
+    flag.write_text("")
+    assert run("--backend", "fake_sine", "--backend-arg", f"fail_load_if_exists={flag}") == 3  # transient
 
 
 def test_worker_cli_replay_backend(tmp_path) -> None:
@@ -206,3 +215,24 @@ def test_worker_cli_replay_backend(tmp_path) -> None:
     finally:
         proc.terminate()
         assert proc.wait(10) == 0
+
+
+def test_client_refuses_another_servers_worker(worker, monkeypatch) -> None:
+    """protocol-1: when two front servers race for one worker port, the loser's worker cannot bind but the winner's
+    answers /healthz. The launch token (echoed in info) keeps the loser from attaching to the winner's worker."""
+    from b1k26.engine import _ProcessExited
+    from b1k26.worker import LAUNCH_TOKEN_ENV
+
+    lt, ws, gate, load = worker
+    gate.set()
+    load.result(10)
+    monkeypatch.setenv(LAUNCH_TOKEN_ENV, "theirs")
+    client = WorkerClient(WorkerConfig(name="x", endpoint=f"ws://127.0.0.1:{ws.bound_port}", startup_timeout_s=5))
+    client._launch_token = "ours"  # as if we had launched a worker on this port
+    with pytest.raises(_ProcessExited, match="another server's worker"):
+        lt.call(client._bring_up())
+    assert not client.ready
+    client._launch_token = "theirs"
+    lt.call(client._bring_up())
+    assert client.ready
+    lt.call(client.close())

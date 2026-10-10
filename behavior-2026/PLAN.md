@@ -30,7 +30,9 @@ inference-time techniques that won 2025, and we run a flawless, compliant evalua
 ## 2. Rules that shape the plan (all verified in the docs/code, see docs/RESEARCH.md)
 1. One run of the final policy, one rollout per instance, on public instances **301-310** (indices 0-9).
    - No best-of-runs.
-   - Re-running a rollout is allowed **only** if it produced no result (crash). We log every attempt.
+   - Re-running a rollout is allowed **only** after an infrastructure crash (no result and no sign of a policy
+     failure). A rollout that failed because of the policy (lost connection, bad reply, query timeout) counts as a
+     failure under the 10/09 rules and is **never** re-run (`b1k26-plan run` enforces both). We log every attempt.
 2. Choose checkpoints and routes using held-out instances **311-320** (explicitly allowed "test set") or train-mode
    instances. **Never** choose using 301-310.
 3. Only RGB, depth and proprioception go into the policy (plus the evaluator's `task_id`).
@@ -45,7 +47,7 @@ inference-time techniques that won 2025, and we run a flawless, compliant evalua
 
 | id | checkpoint | family / backend | why | status |
 |---|---|---|---|---|
-| A | `JackLiu0406/meta-SFT-checkpoints` `meta100-1epoch/step139999` (and `step69999`) | PiBehavior (`pibehavior`) | RLC 2025 architecture, 1 epoch over all 20k 2026 demos on 8xB300. Measured Q 0.65 on task 0 and 0.53 on task 1 (20 instances), similar to Mirua's best. | **Gated: request access now** |
+| A | `JackLiu0406/meta-SFT-checkpoints` `meta100-1epoch/step139999` (and `step69999`) | PiBehavior (`pibehavior`) | RLC 2025 architecture, 1 epoch over all 20k 2026 demos on 8xB300. Third-party measurement of **`step69999`** (not 139999): Q 0.65 on task 0 and 0.53 on task 1 (20 instances), similar to Mirua's best. | **Gated: request access now** |
 | A' | same repo, `single-task-finetune/no-da3/<task>-140k` | PiBehavior | Per-task fine-tunes for all 100 tasks. Route candidates. | gated |
 | B | `sunshk/openpi_comet` `pi05-b1kpt50-cs32` | openpi-comet (`openpi_comet`) | Measured **0.199 on tasks 0-49** under the 2026 evaluator, zero-shot. Language-conditioned, so some transfer to new tasks. | public |
 | C | `kmy17518/gr00t-n1.7-b1k-multitask` `checkpoint-238000` | GR00T N1.7 (`gr00t`) | Trained on all 100 tasks, ~487M samples (2.3 epochs). Never evaluated. | public (accept Cosmos-Reason2-2B terms) |
@@ -59,14 +61,19 @@ inference-time techniques that won 2025, and we run a flawless, compliant evalua
    - HF `JackLiu0406/meta-SFT-checkpoints` (manual approval).
    - Accept terms for `nvidia/Cosmos-Reason2-2B`.
    - Optionally the Inference Speed Form: https://forms.gle/5GNqc2eNhFTx4UhN8.
-2. **Rent eval GPUs.** The setup script checks all of these:
-   - **RT-core GPUs only**: 4090 / 5090 / L40S / RTX 6000 Ada / A6000. A100/H100 cannot render the simulator.
-   - NVIDIA driver at least 580.65.06, and **not 595.x**.
-   - At least 12 vCPU, 48 GB RAM and 250 GB disk per GPU.
+2. **Rent eval GPUs.** Requirements (the setup script enforces the starred ones):
+   - **RT-core GPUs only**\*: 4090 / 5090 / L40S / RTX 6000 Ada / A6000. A100/H100 cannot render the simulator.
+   - NVIDIA driver at least 580.65.06\*, and **not 595.x** (the script only warns on 595.x).
+   - Rent at least 12 vCPU, 48 GB RAM and 250 GB disk per GPU. The script refuses below 30 GB RAM or 150 GB free
+     disk\* and only warns below 8 vCPU, so check the rest yourself.
    - Vast 4090 is about $0.40-0.60/h; RunPod L40S about $0.80-1.10/h.
-   - Plan for 16-20 GPUs from Sun to Fri. Budget about $400-600 (section 5).
+   - Rent elastically: 4-8 GPUs Sun-Tue (bring-up, screening, confirmation), 16-20 GPUs for the Wed-Thu final run
+     (~30 h). That matches section 5's ~630-830 GPU-h, about $300-500 on Vast 4090s. Keeping 16-20 GPUs from Sun to
+     Fri would be ~2000-2400 GPU-h (~$800-1400).
 3. On one node, run `scripts/setup_eval_node.sh` (installs BEHAVIOR-1K `v3.9.3-post2`, assets and task instances, and runs a zero-action smoke rollout). Snapshot it as a template or volume, then clone it to the other nodes.
-4. On the same node: `scripts/envs/<backend>.sh` for B, C, D (and A when access arrives), plus `scripts/download_checkpoints.sh`.
+4. On the same node: `scripts/envs/<backend>.sh` for B, C, D (and A when access arrives), plus
+   `python scripts/download_checkpoints.py --dest /ckpt comet_pt50 gr00t_multitask hoshipu_100t` (and
+   `jackliu_meta100` with `HF_TOKEN`). Checkpoints land in `/ckpt/<name>/...`, the paths the example configs use.
 
 ### Sun 10/11: bring-up (gate G1: every candidate drives the robot without errors)
 - `scripts/smoke_local.sh` (front server + fake worker + evaluator-faithful probe) passes on the node.
@@ -77,6 +84,8 @@ inference-time techniques that won 2025, and we run a flawless, compliant evalua
 ### Mon 10/12: screening (gate G2: pick the policy family)
 - Probe = `configs/probe_tasks.txt` (24 tasks, 12 old + 12 new) x indices 10-11 (ids 311-312) for each candidate:
   ~19 GPU-h per candidate.
+  `b1k26-plan plan --tasks @configs/probe_tasks.txt --instances 10-11 --workers N --out jobs/probe_<cand>`, then
+  `scripts/run_node.sh --config configs/<cand>.yaml --jobs jobs/probe_<cand>/worker_XX.jsonl --out runs/probe_<cand>_XX`.
 - For the best two candidates, also try execution variants (compression on/off, chunk length).
 - `b1k26-score runs/probe_<cand> --per-task`. Compare old-task and new-task means separately.
 - **Decision rule:**
@@ -88,31 +97,46 @@ inference-time techniques that won 2025, and we run a flawless, compliant evalua
   test uses the 2026/eval multi-port code, and confirm that routes picked on 311-320 are fine.
 
 ### Tue 10/13: confirm on all 100 tasks (gate G3: freeze)
-- Run the chosen policy (and runner-up) on **all 100 tasks x index 10** (id 311): ~45 GPU-h each.
+- Run the chosen policy (and runner-up) on **all 100 tasks x index 10** (id 311): ~55-60 GPU-h each (the planner's
+  worst case is 59.4 GPU-h; early successes save 5-10%).
+  `b1k26-plan plan --instances 10 --workers N --out jobs/confirm_<cand>`.
 - Optional per-task routing: `b1k26-select` with shrinkage.
   - Accept it only if the **split-half cross-validated gain** is positive. Otherwise keep group routing.
+  - The CV scores up to 20 distinct splits of the instance ids. With only ids 311-312 there are just two (each id
+    trains once, tests once), so a small positive gain is weak evidence.
 - **Freeze** the routing table, configs and checkpoints by Tue night.
 - Build and test the Docker image (`docker/build.sh`, then `scripts/smoke_local.sh` against the container), and
   run the Turing-safe path (fp32 or XLA upcast) once.
 
 ### Wed 10/14 - Thu 10/15: the final run (one run, never repeated)
-- `b1k26-plan plan --instances 0-9 --workers N` gives 1000 jobs packed longest-first.
-- `scripts/run_node.sh` on every node. It keeps going on its own: it only re-runs jobs that produced no JSON.
+- `b1k26-plan plan --instances 0-9 --final --workers N --out jobs/final` gives 1000 jobs packed longest-first
+  (each worker then runs its own jobs shortest-first). `--final` is required for the reported instances 301-310.
+- `scripts/run_node.sh --config configs/final.yaml --jobs jobs/final/worker_XX.jsonl --out runs/final_nodeXX` on
+  every node, with identical `--wrapper` / `--extra` everywhere. It keeps going on its own: it re-runs only jobs that
+  produced no JSON because of an infrastructure crash, and stops if the policy server cannot be brought back.
 - Expected cost is about 400-600 GPU-h (RGB-D full-res plus policy): ~25-30 h on 20 GPUs.
   - Start by Wed noon UTC at the latest. The longest single rollout (gift baskets, 39k steps) takes ~1.5 h.
-- `b1k26-plan status runs/final --jobs-dir jobs/final` gives the ETA.
+- `b1k26-plan status runs/final_node* --jobs-dir jobs/final` gives the ETA, policy failures and rollouts
+  probably over the 2026 time budget.
 
 ### Fri 10/16: package and submit (by Fri 18:00 UTC; hard stop Sat 11:59 UTC)
 1. `b1k26-plan collect` (refuses mixed runs).
 2. `b1k26-score --validate`.
-3. `b1k26-package`.
-4. Upload `metrics.zip` + `package.zip` (HF dataset or Drive) and the videos.
-5. Push the Docker image.
+3. `b1k26-package` with the exact command in `docs/SUBMIT_CHECKLIST.md` (it refuses placeholders, a missing
+   wrapper and a README whose wrapper or chunk size differs from the run's `status.jsonl`).
+4. Upload `metrics.zip` + `package.zip` and the videos. Self-evaluation results URL: a **fresh HF dataset**
+   whose only zip with "metric" in its path is `metrics.zip` (the leaderboard extractor takes the first such zip),
+   or a Google Drive **file** link to `metrics.zip`. Never a Drive folder holding the zip: the extractor reads only
+   loose JSONs from folders, so the score would be left blank.
+5. Make sure the organizers can pull the Docker image: public registry package (or pull credentials in the
+   portal comments), checked with `docker logout; docker pull <repo>@sha256:<digest>` (SUBMIT_CHECKLIST).
 6. Fill the portal at https://behavior-1k-2026-challenge-leaderboard.hf.space/submit. The method field allows at most 25 characters.
 - Release the repo (open-source prize) and give its URL in the portal's release field.
 
 **If the final run is not complete by Fri 12:00 UTC:** submit what is done. Missing rollouts count as zero, and
-partial submissions are allowed. A finished 900 beats an unfinished 1000.
+partial submissions are allowed. A finished 900 beats an unfinished 1000. Each worker runs its jobs shortest-first,
+so what is missing is each worker's last, longest jobs (instances of the longest tasks): the fewest rollouts per lost
+hour.
 
 ### Contingency: no public model is decent on the new tasks 50-99
 Tasks 50-99 are half the score, and only the 100-task models (A, C, D) were trained on them. Comet pt50 has seen
@@ -136,6 +160,9 @@ makes the simulator about 1.8x faster, which saves about 40% of the final run's 
   with what appears (from their videos) to be the default 224 wrapper.
 - Run the chosen policy on the probe with both wrappers. Switch only if the 224 Q is within noise (about 0.02)
   **and** compute is the binding constraint.
+- To switch: `scripts/run_node.sh --wrapper omnigibson.eval.wrappers.DefaultWrapper` on every node, and
+  `b1k26-package --wrapper omnigibson.eval.wrappers.DefaultWrapper` (it refuses a README whose wrapper differs from
+  the one in `status.jsonl`, and copies that wrapper's source).
 
 ## 5. Compute budget (RT-core GPU-hours)
 
@@ -144,9 +171,9 @@ makes the simulator about 1.8x faster, which saves about 40% of the final run's 
 | bring-up | ~10 | 5 |
 | screening, 4 candidates x 24 tasks x 2 | 192 | 80 |
 | variants on best two | 96 | 40 |
-| confirmation, 2 x 100 tasks x 1 | 200 | 90 |
+| confirmation, 2 x 100 tasks x 1 | 200 | 120 |
 | **final run**, 100 x 10 | 1000 | 400-600 |
-| **total** | | **~600-800** |
+| **total** | | **~630-830** |
 
 That is about **$300-500** on Vast 4090s, or about $600-900 on RunPod L40S. With fewer GPUs, cut the confirmation
 stage first, then the variants. Never cut the final run's start date.

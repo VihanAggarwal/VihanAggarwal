@@ -3,6 +3,7 @@ SIGTERM, worker exit when the front server is killed, and a non-zero exit when t
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import pathlib
@@ -68,11 +69,14 @@ def test_fake_yaml_is_valid_and_launches_a_worker() -> None:
 
 
 def test_launched_worker_restarts_after_crash_and_stops_with_server() -> None:
+    """With engine.restart_wait_s 0, queries get hold actions while the worker restarts (see the next test for the
+    default, waiting)."""
     pytest.importorskip("torch")
     from vendor import load_post2
 
     doc = fake_doc(free_port())
     doc["workers"]["fake"]["launch"] += ["--backend-arg", "warmup_ms=500"]  # a restart window we can observe
+    doc["engine"]["restart_wait_s"] = 0
     h = Harness(doc).start(timeout=60)
     client = h.server.engine.clients["fake"]
     try:
@@ -115,6 +119,39 @@ def test_launched_worker_restarts_after_crash_and_stops_with_server() -> None:
     finally:
         h.stop()
     wait_for(lambda: not pid_alive(pid2), 15, "launched worker still running after server close")
+
+
+def test_queries_wait_for_a_restarting_worker_instead_of_holding() -> None:
+    """robustness-4: while a crashed worker is relaunched, a query waits for it (engine.restart_wait_s) and gets a
+    real plan, instead of an immediate hold that uses up one of the episode's steps."""
+    pytest.importorskip("torch")
+    from vendor import load_post2
+
+    doc = fake_doc(free_port())
+    doc["workers"]["fake"]["launch"] += ["--backend-arg", "warmup_ms=1500"]
+    h = Harness(doc).start(timeout=60)
+    client = h.server.engine.clients["fake"]
+    try:
+        pid1 = client.pid
+        nu = load_post2()
+        pol = nu.WebsocketClientPolicy(host="127.0.0.1", port=h.ports[0])
+        pol.reset()
+        pol.act(to_torch(batched_obs(0, [3])))
+        os.kill(pid1, signal.SIGKILL)
+        wait_for(lambda: h.run(lambda: client.state) != "ready", 5, "supervisor did not notice the crash")
+        pol.reset()  # new rollout: its first query must plan while the worker is down
+        t0 = time.monotonic()
+        a = pol.act(to_torch(batched_obs(0, [3]))).numpy()
+        waited = time.monotonic() - t0
+        assert waited > 0.5, waited  # it waited for the restart (warmup alone is 1.5 s) ...
+        assert not np.array_equal(a[0], hold_action(proprio_at(0)))  # ... and got a real plan, not a hold
+        assert h.run(lambda: client.ready and client.pid != pid1 and client.restarts == 1)
+        session = h.run(lambda: h.server.groups[h.ports[0]][0].sessions[0])
+        assert session.stats.hold_steps == 0 and session.stats.plan_failures == 0
+        assert session.stats.restart_wait_ms > 500
+        pol._ws.close()
+    finally:
+        h.stop()
 
 
 def _start_cli(tmp_path: pathlib.Path, doc: dict) -> tuple[subprocess.Popen, int]:
@@ -203,15 +240,21 @@ def test_status_endpoint_is_json() -> None:
         h.stop()
 
 
-def test_restart_budget_is_a_sliding_window() -> None:
-    """max_restarts counts only restarts within restart_window_s: a later crash is restarted again, a crash loop
-    inside the window gives up (worker failed, /healthz 503)."""
+def test_restart_budget_is_a_sliding_window_then_backoff() -> None:
+    """max_restarts counts only restarts within restart_window_s: a later crash is restarted at once again. A crash
+    loop inside the window is not given up (robustness-3): the worker waits restart_backoff_s (state backoff,
+    /healthz 503) and is then relaunched, and /healthz returns to 200."""
     doc = fake_doc(free_port())
     doc["workers"]["fake"]["max_restarts"] = 1
     doc["workers"]["fake"]["restart_window_s"] = 2.0
+    doc["workers"]["fake"]["restart_backoff_s"] = 1.5
     h = Harness(doc).start(timeout=60)
     client = h.server.engine.clients["fake"]
     pids: list[int] = []
+
+    def healthz() -> int:
+        return requests.get(f"http://127.0.0.1:{h.ports[0]}/healthz", timeout=2).status_code
+
     try:
         def crash_and_wait_restart() -> None:
             old = h.run(lambda: client.pid)
@@ -225,11 +268,116 @@ def test_restart_budget_is_a_sliding_window() -> None:
         assert h.run(lambda: client.restarts) == 2
         last = h.run(lambda: client.pid)
         pids.append(last)
-        os.kill(last, signal.SIGKILL)  # a second crash within 2 s of the last restart: give up
-        wait_for(lambda: h.run(lambda: client.failed), 15, "worker should be marked failed")
-        assert h.run(lambda: h.server.engine.warm) is False
-        assert requests.get(f"http://127.0.0.1:{h.ports[0]}/healthz", timeout=2).status_code == 503
+        os.kill(last, signal.SIGKILL)  # a second crash within 2 s of the last restart: back off
+        wait_for(lambda: h.run(lambda: client.state) == "backoff", 15, "worker should be in backoff")
+        assert h.run(lambda: client.failed) and h.run(lambda: h.server.engine.warm) is False
+        assert healthz() == 503
+        wait_for(lambda: h.run(lambda: client.ready and client.pid != last), 30, "worker not relaunched after backoff")
+        assert h.run(lambda: h.server.engine.warm) is True and healthz() == 200
+        assert h.run(lambda: client.restarts) == 3
+        pids.append(h.run(lambda: client.pid))
     finally:
         h.stop()
     for pid in pids:
         wait_for(lambda: not pid_alive(pid), 15, f"worker {pid} still running")
+
+
+def test_slow_loading_default_worker_is_not_killed_at_startup_timeout(tmp_path: pathlib.Path) -> None:
+    """protocol-3: a worker that still answers /healthz 503 (loading) at startup_timeout_s keeps loading (up to 3x)
+    instead of being killed, and the server becomes healthy."""
+    doc = fake_doc(free_port())
+    doc["workers"]["fake"]["launch"] += ["--backend-arg", "warmup_ms=3500"]
+    doc["workers"]["fake"]["startup_timeout_s"] = 2.0
+    proc, port = _start_cli(tmp_path, doc)
+    try:
+        _wait_healthy(proc, port, timeout=30)
+        st = requests.get(f"http://127.0.0.1:{port}/status", timeout=2).json()["engine"]["workers"]["fake"]
+        assert st["state"] == "ready" and st["restarts"] == 0
+    finally:
+        proc.terminate()
+        proc.wait(30)
+
+
+def test_default_worker_with_transient_load_failures_is_retried_until_ready(tmp_path: pathlib.Path) -> None:
+    """protocol-3: a default worker that keeps failing to load (exit status 3) is relaunched with backoff, not given
+    up: the front server stays up with /healthz 503 and turns healthy once the worker loads."""
+    flag = tmp_path / "fail_load"
+    flag.write_text("")
+    doc = fake_doc(free_port())
+    doc["workers"]["fake"]["launch"] += ["--backend-arg", f"fail_load_if_exists={flag}"]
+    doc["workers"]["fake"]["max_restarts"] = 1
+    doc["workers"]["fake"]["restart_backoff_s"] = 0.5
+    doc["workers"]["fake"]["restart_backoff_max_s"] = 1.0
+    proc, port = _start_cli(tmp_path, doc)
+    try:
+        time.sleep(6.0)  # several failed loads and backoffs
+        assert proc.poll() is None, "front server exited although the failure is transient"
+        assert requests.get(f"http://127.0.0.1:{port}/healthz", timeout=2).status_code == 503
+        st = requests.get(f"http://127.0.0.1:{port}/status", timeout=2).json()["engine"]["workers"]["fake"]
+        assert st["restarts"] >= 2 and st["state"] in ("backoff", "starting", "restarting"), st
+        flag.unlink()
+        _wait_healthy(proc, port, timeout=30)
+    finally:
+        proc.terminate()
+        proc.wait(30)
+
+
+def test_two_servers_from_one_config_on_one_host(tmp_path: pathlib.Path) -> None:
+    """protocol-1 / robustness-6: two front servers started from the same config (same launched worker port) on
+    different front ports both turn healthy: the second one's worker moves to a free loopback port, and each front
+    server talks to its own worker."""
+    worker_port = free_port()
+    procs = []
+    try:
+        for i in range(2):
+            d = tmp_path / f"s{i}"
+            d.mkdir()
+            procs.append(_start_cli(d, fake_doc(worker_port)))
+            if i == 0:
+                _wait_healthy(*procs[0])
+        for proc, port in procs:
+            _wait_healthy(proc, port, timeout=60)
+        workers = [requests.get(f"http://127.0.0.1:{port}/status", timeout=2).json()["engine"]["workers"]["fake"]
+                   for _, port in procs]
+        assert workers[0]["endpoint"] == f"ws://127.0.0.1:{worker_port}"
+        assert workers[1]["endpoint"] != workers[0]["endpoint"] and workers[0]["pid"] != workers[1]["pid"]
+        for _, port in procs:
+            res = run_probe("127.0.0.1", port, steps=40, chunk=20, res="224", health_timeout_s=5)
+            assert res.ok, res.violations
+    finally:
+        for proc, _ in procs:
+            proc.terminate()
+        for proc, _ in procs:
+            proc.wait(30)
+
+
+def test_routed_worker_gets_one_start_attempt_then_background_retries(tmp_path: pathlib.Path) -> None:
+    """protocol-4: /healthz does not wait for a routed (non-default) worker's relaunch loop: it gets one start
+    attempt; while it is retried in the background (backoff) its tasks fall back to the default, and once it is up
+    new rollouts are routed to it again."""
+    flag = tmp_path / "fail_load"
+    flag.write_text("")
+    doc = fake_doc(free_port())
+    routed = copy.deepcopy(doc["workers"]["fake"])
+    routed["port"] = free_port()
+    routed["launch"] = routed["launch"] + ["--backend-arg", f"fail_load_if_exists={flag}"]
+    routed["restart_backoff_s"] = 1.0
+    routed["restart_backoff_max_s"] = 1.0
+    doc["workers"]["routed"] = routed
+    doc["profiles"]["routed"] = dict(doc["profiles"]["fake"], worker="routed")
+    doc["routing"]["per_task"] = {"turning_on_radio": "routed"}
+    h = Harness(doc).start(timeout=30)
+    try:
+        client = h.server.engine.clients["routed"]
+        assert h.run(lambda: client.restarts) == 0 and h.run(lambda: client.failed)  # one attempt, then backoff
+        res = run_probe("127.0.0.1", h.ports[0], steps=20, chunk=0, res="224", task_ids=[0], health_timeout_s=5)
+        assert res.ok, res.violations
+        s = h.run(lambda: h.server.groups[h.ports[0]][0].sessions[0])
+        assert s.profile_name == "fake" and s.fallback_note and s.stats.hold_steps == 0
+        flag.unlink()
+        wait_for(lambda: h.run(lambda: client.ready), 30, "routed worker not brought back in the background")
+        res = run_probe("127.0.0.1", h.ports[0], steps=20, chunk=0, res="224", task_ids=[0], health_timeout_s=5)
+        assert res.ok, res.violations
+        assert h.run(lambda: h.server.groups[h.ports[0]][0].sessions[0].profile_name) == "routed"
+    finally:
+        h.stop()

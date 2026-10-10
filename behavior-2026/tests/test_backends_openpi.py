@@ -928,3 +928,25 @@ def test_example_configs_parse(name):
             accepted = set(inspect.signature(ob.OpenPIBackendBase.__init__).parameters) | set(
                 inspect.signature(cls.__init__).parameters)
             assert set(kwargs) <= accepted, set(kwargs) - accepted
+
+
+def test_node_mem_fraction_override(monkeypatch):
+    from b1k26.backends.openpi_b1k import node_mem_fraction
+
+    monkeypatch.delenv("B1K26_MEM_FRACTION", raising=False)
+    assert node_mem_fraction(0.85) == 0.85
+    monkeypatch.setenv("B1K26_MEM_FRACTION", "0.4")
+    assert node_mem_fraction(0.85) == pytest.approx(0.4)
+    monkeypatch.setenv("B1K26_MEM_FRACTION", "1.7")
+    with pytest.raises(ValueError):
+        node_mem_fraction(0.85)
+
+
+def test_node_mem_fraction_wins_over_config_in_backend(monkeypatch, ckpt):
+    import os  # noqa: PLC0415
+
+    write_stats(ckpt / "assets" / "turning_on_radio", RADIO_STATE_Q99)
+    monkeypatch.delenv("XLA_PYTHON_CLIENT_MEM_FRACTION", raising=False)
+    monkeypatch.setenv("B1K26_MEM_FRACTION", "0.35")
+    load_b1k(monkeypatch, {}, checkpoint=str(ckpt), mem_fraction=0.85)
+    assert os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] == "0.350"

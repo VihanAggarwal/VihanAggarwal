@@ -284,6 +284,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--validate", action="store_true", help="validate the first path as a submission metrics dir")
     ap.add_argument("--videos", default=None, help="videos dir for --validate")
     ap.add_argument("--json", default=None, help="write the summary (and per-task table) to this JSON file")
+    ap.add_argument("--status-log", default=None,
+                    help="b1k26-plan status.jsonl to report policy failures and over-budget rollouts from (with "
+                         "--validate; default: status.jsonl next to the metrics dir, if any)")
     args = ap.parse_args(argv)
 
     ids = parse_ids(args.instances)
@@ -305,7 +308,31 @@ def main(argv: list[str] | None = None) -> int:
         hard = [p for p in problems if "allowed for partial submissions" not in p]
         rc = 1 if hard else 0
         print(f"validation: {len(problems)} problem(s), {len(hard)} blocking", file=sys.stderr)
+        status = Path(args.status_log) if args.status_log else Path(args.paths[0]).parent / "status.jsonl"
+        if status.is_file():
+            report_run_status(status)
     return rc
+
+
+def report_run_status(status_log: Path) -> tuple[list[str], list[str]]:
+    """Print (and return) the rollouts a status.jsonl marks as policy failures (not re-run, no metrics: zero) and as
+    probably over the 2026 time budget (max_steps seconds after scene load)."""
+    policy, over = [], []
+    for line in status_log.read_text().splitlines():
+        if not line.strip():
+            continue
+        rec = json.loads(line)
+        if rec.get("policy_failure") and not rec.get("json_present"):
+            policy.append(f"{rec.get('job')} ({rec['policy_failure']})")
+        if rec.get("over_time_budget"):
+            over.append(str(rec.get("job")))
+    for job in policy:
+        print(f"POLICY FAILURE (no metrics, counts as zero; not re-run): {job}", file=sys.stderr)
+    for job in over:
+        print(f"OVER TIME BUDGET (2026/eval would have cut it off): {job}", file=sys.stderr)
+    print(f"status {status_log}: {len(policy)} policy failure(s), {len(over)} rollout(s) over the time budget",
+          file=sys.stderr)
+    return policy, over
 
 
 if __name__ == "__main__":

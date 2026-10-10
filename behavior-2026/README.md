@@ -20,26 +20,28 @@ submission.
 | `b1k26-serve` | Front server speaking the evaluator's websocket protocol on many ports at once. Handles `/healthz` gating, the metadata frame, reset-without-reply, batched/unbatched observations, exact `action_chunk` replies, and reconnect replay. Never closes a socket on error; falls back to a hold-pose action (never zeros). |
 | control layer | Receding-horizon chunk execution, RLC-style action compression, gripper reopen rule for all 100 tasks, stage voting, inpainting prefix, base-velocity masking for 2025 checkpoints, micro-batched inference. |
 | `b1k26-worker` + backends | One process per model family, each in its own env: openpi-comet (Comet pt50), openpi `pi05_b1k` (organizer baseline, Hoshipu 100-task), PiBehavior (RLC 2025, JackLiu 100-task + per-task fine-tunes), GR00T N1.7. |
-| `b1k26-plan` | Packs 1000 rollouts onto N GPUs (longest-first). The resumable runner retries only rollouts that produced no result and logs every attempt. Also shows status/ETA and merges node outputs, refusing mixed runs. |
+| `b1k26-plan` | Packs 1000 rollouts onto N GPUs (longest-first; each GPU runs its share shortest-first). The resumable runner retries only rollouts that produced no result because of an infrastructure crash (never a policy failure) and logs every attempt with its command. Also shows status/ETA and merges node outputs, refusing mixed runs. |
 | `b1k26-score` | Leaderboard and official Q, per-task tables, tie-breakers, submission validation. |
 | `b1k26-select` | Per-task routing from held-out rollouts with empirical-Bayes shrinkage and split-half cross-validation. Refuses to select on the reported instances. |
-| `b1k26-package` | `metrics.zip` (only rollout JSONs), `package.zip` (JSONs + wrapper + robot config + README + checksums), video manifest. |
+| `b1k26-package` | `metrics.zip` (only rollout JSONs), `package.zip` (JSONs + wrapper + robot config + README + checksums), video manifest. Refuses to state anything the run did not do (wrapper, chunk size, placeholders). |
 | `scripts/` | Cloud node bootstrap (driver/RT-core checks, BEHAVIOR-1K install, smoke rollout), per-family env setup, checkpoint downloads, per-node runner. |
-| `docker/` | The final policy image: one 24 GB GPU, Turing-safe, enroot-friendly, weights baked in. |
+| `docker/` | The final policy image: one 24 GB GPU, Turing-safe, enroot-friendly, weights and every file fetched at load baked in (checked offline at build time). |
 
 ## Quick start (on an RT-core GPU node)
 
 ```bash
 bash scripts/setup_eval_node.sh                               # BEHAVIOR-1K v3.9.3-post2 + assets + smoke rollout
+source /workspace/b1k_env.sh                                  # the behavior env: b1k26 CLIs + huggingface_hub
 bash scripts/envs/openpi_comet.sh --prefix /opt/envs/openpi_comet
-python scripts/download_checkpoints.py --dest /workspace/ckpt comet_pt50
-source /workspace/b1k_env.sh
+python scripts/download_checkpoints.py --dest /ckpt comet_pt50   # -> /ckpt/comet_pt50/pi05-b1kpt50-cs32 (the config's path)
 
 # one held-out rollout with the Comet pt50 profile
 b1k26-plan plan --tasks turning_on_radio --instances 10 --workers 1 --out jobs/smoke
 bash scripts/run_node.sh --config configs/comet_pt50.example.yaml --jobs jobs/smoke/worker_00.jsonl --out runs/smoke
 b1k26-score runs/smoke --per-task
 ```
+`scripts/download_checkpoints.py --list` shows every candidate; each lands in `/ckpt/<name>/...`, the layout the
+example configs and `docker/build.sh --ckpt /ckpt/<name>` use.
 
 ## Tests
 

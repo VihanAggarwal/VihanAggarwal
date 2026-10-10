@@ -3,7 +3,7 @@
 #
 # Setup (docs/BACKENDS.md#openpi_comet):
 #   scripts/envs/openpi_comet.sh --prefix /opt/envs/openpi_comet       (Docker: BACKENDS=openpi_comet)
-#   hf download sunshk/openpi_comet --include "pi05-b1kpt50-cs32/*" --local-dir /ckpt/openpi_comet
+#   python scripts/download_checkpoints.py --dest /ckpt comet_pt50     (-> /ckpt/comet_pt50/pi05-b1kpt50-cs32)
 #
 # Worker kwargs are passed as one JSON object (--backend-kwargs) to
 # b1k26.backends.openpi_comet.CometBackend(checkpoint=..., **kwargs); every key is optional.
@@ -22,7 +22,7 @@ workers:
       - --backend
       - openpi_comet
       - --checkpoint
-      - /ckpt/openpi_comet/pi05-b1kpt50-cs32
+      - /ckpt/comet_pt50/pi05-b1kpt50-cs32
       - --port
       - "9101"
       - --backend-kwargs
@@ -31,7 +31,7 @@ workers:
       # num_steps: flow steps (model default 10). dtype: bfloat16 (upstream) | float32 (see Turing notes).
       # batched/max_batch: one padded sample_actions call per micro-batch (buckets 1,2,4,8 compiled at warmup).
       # mem_fraction: XLA_PYTHON_CLIENT_MEM_FRACTION for this worker; lower it when workers share a GPU.
-      - '{"config_name": "pi05_b1k-base", "num_steps": 10, "dtype": "bfloat16", "batched": true, "max_batch": 8, "mem_fraction": 0.85}'
+      - '{"config_name": "pi05_b1k-base", "num_steps": 10, "dtype": "bfloat16", "batched": true, "max_batch": 8, "mem_fraction": 0.5}'
     startup_timeout_s: 900
 
 profiles:

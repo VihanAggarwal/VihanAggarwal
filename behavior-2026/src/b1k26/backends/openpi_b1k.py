@@ -49,6 +49,23 @@ from b1k26.backends.base import Backend, ChunkOut, InferItem
 
 logger = logging.getLogger(__name__)
 
+
+def node_mem_fraction(configured: float) -> float:
+    """B1K26_MEM_FRACTION (set per node by scripts/restart_server.sh) overrides the config's mem_fraction.
+
+    Self-evaluation nodes share one GPU between the simulator and the policy, while a serving config may be written
+    for a dedicated GPU; the node-level value keeps the policy from growing into the simulator's memory.
+    """
+    override = os.environ.get("B1K26_MEM_FRACTION")
+    if not override:
+        return configured
+    value = float(override)
+    if not 0.05 <= value <= 1.0:
+        raise ValueError("B1K26_MEM_FRACTION must be in [0.05, 1.0]")
+    if value != configured:
+        logger.warning("mem_fraction %.3f from the config overridden by B1K26_MEM_FRACTION=%.3f", configured, value)
+    return value
+
 # Pinned upstream sources (scripts/envs/openpi_b1k.sh installs exactly this commit).
 OPENPI_B1K_REPO = "https://github.com/wensi-ai/openpi"
 OPENPI_B1K_COMMIT = "0cc8e355f7bac0976db1cc3139b1ff0379feea60"  # branch "behavior" head, 2026-06-28
@@ -443,6 +460,7 @@ class OpenPIBackendBase(Backend):
     def _set_mem_fraction(fraction: float) -> None:
         if not 0.05 <= fraction <= 1.0:
             raise ValueError("mem_fraction must be in [0.05, 1.0]")
+        fraction = node_mem_fraction(fraction)
         if "jax" in sys.modules:
             logger.warning("jax already imported; mem_fraction=%s may have no effect", fraction)
         os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = f"{fraction:.3f}"

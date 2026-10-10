@@ -3,6 +3,7 @@ the Docker env layout, the serve --check pre-flight, and the end-to-end smoke sc
 
 from __future__ import annotations
 
+import copy
 import importlib
 import inspect
 import json
@@ -136,6 +137,37 @@ def test_shipped_config_matches_backends_and_docker_layout(path: pathlib.Path) -
             assert min(ex.predicted_steps_to_use, horizon) + ex.keep_for_inpaint <= horizon, (path.name, prof.name)
 
 
+def test_example_config_checkpoints_match_the_download_tool() -> None:
+    """backends-4 / robustness-8 / rules+docs-8: every /ckpt path an example config loads is where
+    scripts/download_checkpoints.py --dest /ckpt <name> puts it (or the config header says how to get it), so the
+    documented download + config work together (also with docker/build.sh --ckpt /ckpt/<name>)."""
+    import fnmatch
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("dl", REPO / "scripts" / "download_checkpoints.py")
+    dl = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(dl)
+    checked = 0
+    for path in CONFIGS:
+        text = path.read_text()
+        body = "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
+        for ref in sorted(set(re.findall(r"/ckpt/[^\s\"',)]+", body))):
+            name, _, rest = ref[len("/ckpt/"):].partition("/")
+            if name in dl.CANDIDATES:
+                patterns = [p.format(step=dl.DEFAULT_STEPS.get(name, "")) for p in dl.CANDIDATES[name][1] or []]
+                assert any(fnmatch.fnmatch(f"{rest}/params/x", p) or fnmatch.fnmatch(f"{rest}/x", p)
+                           for p in patterns), f"{path.name}: {ref} is not downloaded by {name} ({patterns})"
+                assert f"download_checkpoints.py --dest /ckpt" in text and name in text.split("server:")[0]
+            else:
+                assert f"-d /ckpt/{name}" in text, f"{path.name}: the header does not say how to get {ref}"
+            checked += 1
+    assert checked >= 8
+    for doc in ("README.md", "PLAN.md", "docs/BACKENDS.md", "scripts/setup_eval_node.sh"):
+        text = (REPO / doc).read_text()
+        assert "download_checkpoints.sh" not in text, doc
+        assert not re.search(r"--include \"[^\"]+\" \\?\s*\"", text), f"{doc}: multi-pattern hf download --include"
+
+
 def test_docker_env_names_map_to_env_scripts() -> None:
     out = subprocess.run(["bash", str(REPO / "docker" / "install_envs.sh"), "--dry-run", "--root", "/x",
                           *DOCKER_ENVS], capture_output=True, text=True, timeout=30)
@@ -162,6 +194,62 @@ def test_dockerfile_layout() -> None:
     assert re.search(r"HF_HOME=/opt/", text)
     assert "b1k26-serve --config /config/serve.yaml --check" in text
     assert re.search(r'ENTRYPOINT \["/opt/envs/front/bin/b1k26-serve", "--config", "/config/serve.yaml"\]', text)
+
+
+def test_docker_image_needs_no_network_at_start() -> None:
+    """backends-1 / robustness-1: the PaliGemma tokenizer that openpi models fetch at every load is baked into
+    OPENPI_DATA_HOME (outside /tmp, mode 0777). backends-2 / robustness-2: the image goes offline only after the env
+    install (the gr00t env downloads its gated backbone there, with the hf_token build secret), and a
+    --network=none step checks both."""
+    text = (REPO / "docker" / "Dockerfile").read_text()
+    assert text.startswith("# syntax=docker/dockerfile:1")
+    assert re.search(r"OPENPI_DATA_HOME=/opt/", text)
+    assert "storage.googleapis.com/big_vision/paligemma_tokenizer.model" in text
+    assert "-o /opt/openpi_data/big_vision/paligemma_tokenizer.model" in text
+    assert "chmod 0777 /opt/openpi_data" in text
+    install = text.index("bash /opt/behavior-2026/docker/install_envs.sh")
+    offline = text.index("ENV HF_HUB_OFFLINE=1")
+    assert install < offline, "HF_HUB_OFFLINE must be set after the env install"
+    assert "--mount=type=secret,id=hf_token" in text[:install]
+    assert re.search(r"RUN --network=none bash /opt/behavior-2026/docker/check_offline.sh", text[offline:])
+    build = (REPO / "docker" / "build.sh").read_text()
+    assert '--build-arg GR00T_ENV_ARGS="$GR00T_ENV_ARGS"' in build and "id=hf_token" in build
+    assert "DOCKER_BUILDKIT=1" in build
+
+
+def test_check_offline_script(tmp_path: pathlib.Path) -> None:
+    """docker/check_offline.sh fails when an openpi env would download the PaliGemma tokenizer at load (here with a
+    stand-in openpi package that behaves like the forks' maybe_download without network)."""
+    pkg = tmp_path / "pkgs" / "openpi" / "models"
+    pkg.mkdir(parents=True)
+    (pkg.parent / "__init__.py").write_text("")
+    (pkg / "__init__.py").write_text("")
+    (pkg / "tokenizer.py").write_text(
+        "import os, pathlib\n"
+        "class PaligemmaTokenizer:\n"
+        "    def __init__(self, max_len=48):\n"
+        "        home = pathlib.Path(os.getenv('OPENPI_DATA_HOME', '~/.cache/openpi')).expanduser()\n"
+        "        if not (home / 'big_vision' / 'paligemma_tokenizer.model').exists():\n"
+        "            raise OSError('network is unreachable')\n")
+    root = tmp_path / "envs"
+    (root / "openpi_comet" / "venv" / "bin").mkdir(parents=True)
+    (root / "openpi_comet" / "venv" / "bin" / "python").symlink_to(sys.executable)
+    data = tmp_path / "openpi_data"
+
+    def run(home: pathlib.Path | None) -> subprocess.CompletedProcess:
+        env = {k: v for k, v in os.environ.items() if k != "OPENPI_DATA_HOME"}
+        env["PYTHONPATH"] = str(tmp_path / "pkgs")
+        if home is not None:
+            env["OPENPI_DATA_HOME"] = str(home)
+        return subprocess.run(["bash", str(REPO / "docker" / "check_offline.sh"), str(root)], capture_output=True,
+                              text=True, timeout=60, env=env)
+
+    assert run(None).returncode == 1  # OPENPI_DATA_HOME unset: ~/.cache/openpi is empty at run time
+    assert run(data).returncode == 1  # not baked
+    (data / "big_vision").mkdir(parents=True)
+    (data / "big_vision" / "paligemma_tokenizer.model").write_bytes(b"x")
+    ok = run(data)
+    assert ok.returncode == 0, ok.stdout + ok.stderr
 
 
 # ------------------------------------------------------------------------------------------------------------
@@ -204,6 +292,70 @@ def test_smoke_local_script(tmp_path: pathlib.Path) -> None:
     for name in ("full_chunk", "full_step", "multi_a", "multi_b", "batched_224"):
         summary = json.loads((tmp_path / "smoke" / f"{name}.json").read_text())
         assert summary["ok"] and summary["num_violations"] == 0, (name, summary)
+
+
+def _restart_server(tmp_path: pathlib.Path, cfg: pathlib.Path, port: int, *extra: str,
+                    timeout: float = 120) -> subprocess.CompletedProcess:
+    env = dict(os.environ)
+    env["PATH"] = os.path.dirname(sys.executable) + os.pathsep + env.get("PATH", "")
+    return subprocess.run(["bash", str(REPO / "scripts" / "restart_server.sh"), "--config", str(cfg), "--port",
+                           str(port), "--log", str(tmp_path / "server.log"), "--pidfile", str(tmp_path / "server.pid"),
+                           *extra], capture_output=True, text=True, timeout=timeout, env=env)
+
+
+def test_restart_server_script_is_bounded(tmp_path: pathlib.Path) -> None:
+    """robustness-5: run_node.sh's restart path (scripts/restart_server.sh) replaces a running server, and gives up
+    with exit status 1 (never loops forever) when the new server dies or never turns healthy."""
+    import requests
+
+    def alive(pid: int) -> bool:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        stat = pathlib.Path(f"/proc/{pid}/stat")
+        return not stat.exists() or stat.read_text().rsplit(")", 1)[1].split()[0] != "Z"
+
+    doc = yaml.safe_load((REPO / "configs" / "fake.yaml").read_text())
+    doc["workers"]["fake"]["port"] = free_port()
+    cfg = tmp_path / "fake.yaml"
+    cfg.write_text(yaml.safe_dump(doc))
+    port = free_port()
+    pidfile = tmp_path / "server.pid"
+    try:
+        out = _restart_server(tmp_path, cfg, port)
+        assert out.returncode == 0, out.stdout + out.stderr
+        pid1 = int(pidfile.read_text())
+        assert requests.get(f"http://127.0.0.1:{port}/healthz", timeout=2).status_code == 200
+        out = _restart_server(tmp_path, cfg, port)  # replaces the running server
+        assert out.returncode == 0, out.stdout + out.stderr
+        pid2 = int(pidfile.read_text())
+        assert pid2 != pid1 and not alive(pid1) and alive(pid2)
+    finally:
+        if pidfile.exists() and alive(int(pidfile.read_text())):
+            os.kill(int(pidfile.read_text()), 15)
+    # A server that exits at start (configuration error): two attempts, then exit 1.
+    bad = copy.deepcopy(doc)
+    bad["workers"]["fake"]["launch"] = ["{python}", "-m", "b1k26.worker", "--backend", "no_such", "--port", "{port}"]
+    cfg.write_text(yaml.safe_dump(bad))
+    out = _restart_server(tmp_path, cfg, free_port(), "--pause", "1")
+    assert out.returncode == 1 and "giving up after 2 attempt(s)" in out.stdout, out.stdout
+    # A server that stays up but never turns healthy (its worker keeps failing to load): bounded by --health-timeout.
+    flag = tmp_path / "fail"
+    flag.write_text("")
+    slow = copy.deepcopy(doc)
+    slow["workers"]["fake"]["launch"] += ["--backend-arg", f"fail_load_if_exists={flag}"]
+    cfg.write_text(yaml.safe_dump(slow))
+    out = _restart_server(tmp_path, cfg, free_port(), "--health-timeout", "4", "--tries", "1")
+    assert out.returncode == 1 and "not healthy after 4 s" in out.stdout, out.stdout
+    assert not alive(int(pidfile.read_text()))
+
+
+def test_run_node_script_passes_the_wrapper_and_bounded_restart() -> None:
+    text = (REPO / "scripts" / "run_node.sh").read_text()
+    assert subprocess.run(["bash", "-n", str(REPO / "scripts" / "run_node.sh")]).returncode == 0
+    assert '--wrapper "$WRAPPER"' in text and "restart_server.sh" in text and "--health-timeout-s" in text
+    assert "until curl" not in text  # no unbounded wait loop
 
 
 # ------------------------------------------------------------------------------------------------------------

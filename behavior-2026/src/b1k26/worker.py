@@ -12,7 +12,10 @@ Messages are msgpack maps (b1k26.protocol) in binary websocket frames:
 
 The server starts listening immediately: ``/healthz`` answers 503 while the backend loads and warms up, then 200.
 Inference runs on one dedicated thread (one model, one GPU), so pings and health checks stay responsive. A load
-failure exits the process with status 3 so the front server's supervisor sees it.
+failure exits the process so the front server's supervisor sees it: status 2 (``EXIT_CONFIG_ERROR``) for a
+configuration error that a relaunch cannot fix (bad arguments, unknown backend, missing files, bad constructor
+arguments: ``CONFIG_ERRORS``), status 3 for anything else (CUDA/XLA errors, out of memory, ...), which the front
+server retries.
 """
 
 from __future__ import annotations
@@ -40,6 +43,12 @@ from b1k26.protocol import packb, unpackb
 logger = logging.getLogger("b1k26.worker")
 
 PARENT_PID_ENV = "B1K26_PARENT_PID"  # set by the front server: exit when that process goes away
+LAUNCH_TOKEN_ENV = "B1K26_LAUNCH_TOKEN"  # set by the front server; echoed in info so it can tell its worker apart
+EXIT_CONFIG_ERROR = 2  # same value as b1k26.engine.EXIT_CONFIG_ERROR (argparse also exits 2)
+EXIT_LOAD_ERROR = 3
+# Load exceptions that are deterministic for a given command line: relaunching cannot help.
+CONFIG_ERRORS: tuple[type[BaseException], ...] = (FileNotFoundError, NotADirectoryError, IsADirectoryError,
+                                                  ImportError, TypeError, ValueError, KeyError)
 ROLES = ("head", "left_wrist", "right_wrist")
 
 
@@ -252,6 +261,9 @@ class WorkerServer:
                 raise RuntimeError("backend is not loaded yet" + (" (load failed)" if self.load_error else ""))
             info = _jsonable_info(self.backend.info())
             info.update({"warm": self.warm, "backend": self.name, "pid": os.getpid()})
+            token = os.environ.get(LAUNCH_TOKEN_ENV)
+            if token:
+                info["launch_token"] = token
             return info
         if op == "warmup":
             if not self.loaded or self.backend is None:
@@ -332,17 +344,24 @@ def _start_parent_watchdog() -> None:
     threading.Thread(target=watch, name="b1k26-parent-watchdog", daemon=True).start()
 
 
-async def _amain(args: argparse.Namespace) -> int:
+def backend_kwargs(args: argparse.Namespace) -> dict[str, Any]:
+    """Constructor kwargs from --backend-kwargs, --backend-arg and --checkpoint. Raises ValueError."""
     kwargs: dict[str, Any] = {}
     if args.backend_kwargs:
-        parsed = json.loads(args.backend_kwargs)
+        try:
+            parsed = json.loads(args.backend_kwargs)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"--backend-kwargs is not valid JSON: {e}") from None
         if not isinstance(parsed, dict):
-            raise SystemExit("--backend-kwargs must be a JSON object")
+            raise ValueError("--backend-kwargs must be a JSON object")
         kwargs.update(parsed)
     kwargs.update(parse_backend_args(args.backend_arg))
     if args.checkpoint is not None:
         kwargs["checkpoint"] = args.checkpoint
+    return kwargs
 
+
+async def _amain(args: argparse.Namespace, kwargs: dict[str, Any]) -> int:
     server = WorkerServer(lambda: create_backend(args.backend, **kwargs), host=args.host, port=args.port,
                           warmup=not args.no_warmup, name=args.backend)
     loop = asyncio.get_running_loop()
@@ -358,7 +377,10 @@ async def _amain(args: argparse.Namespace) -> int:
     done, _ = await asyncio.wait({load_task, stop_task}, return_when=asyncio.FIRST_COMPLETED)
     rc = 0
     if load_task in done and load_task.exception() is not None:
-        rc = 3
+        exc = load_task.exception()
+        rc = EXIT_CONFIG_ERROR if isinstance(exc, CONFIG_ERRORS) else EXIT_LOAD_ERROR
+        if rc == EXIT_CONFIG_ERROR:
+            logger.error("configuration error (%s): relaunching this worker cannot fix it", type(exc).__name__)
     elif stop_task not in done:
         await stop_task
     else:
@@ -369,13 +391,22 @@ async def _amain(args: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    from b1k26.backends.base import _REGISTRY
+
+    if args.backend not in _REGISTRY:  # exit status 2: a configuration error the front server does not retry
+        parser.error(f"unknown backend {args.backend!r}; known: {sorted(_REGISTRY)}")
+    try:
+        kwargs = backend_kwargs(args)
+    except ValueError as e:
+        parser.error(str(e))
     logging.basicConfig(level=args.log_level.upper(),
                         format=f"%(asctime)s [worker:{args.backend}:{args.port}] %(levelname)s %(message)s")
     logging.getLogger("websockets").setLevel(logging.WARNING)
     _start_parent_watchdog()
     try:
-        rc = asyncio.run(_amain(args))
+        rc = asyncio.run(_amain(args, kwargs))
     except KeyboardInterrupt:
         rc = 130
     # Backends may leave non-daemon threads (JAX/torch); do not hang on interpreter shutdown.

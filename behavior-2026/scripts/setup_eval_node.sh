@@ -105,7 +105,7 @@ fi
 conda activate behavior
 
 log "installing b1k26 into the behavior env"
-python -m pip install -q -e "$REPO_DIR[control]"
+python -m pip install -q -e "$REPO_DIR[control]" huggingface_hub   # huggingface_hub: scripts/download_checkpoints.py
 python -c "import omnigibson, b1k26; print('omnigibson', omnigibson.__version__, '| b1k26', b1k26.__version__)"
 
 # ------------------------------------------------------------------------------------------------ env file
@@ -135,4 +135,4 @@ if [[ "$SKIP_SMOKE" != 1 ]]; then
     || die "smoke rollout produced no metrics JSON (Isaac exits 0 even on crashes: read the log above)"
   log "smoke test OK in $(( $(date +%s) - start )) s (includes first-time shader compilation)"
 fi
-log "done. Next: scripts/envs/<backend>.sh for each candidate, then scripts/download_checkpoints.sh"
+log "done. Next: scripts/envs/<backend>.sh for each candidate, then python scripts/download_checkpoints.py --dest /ckpt <names> (--list shows them)"

@@ -5,23 +5,30 @@ A config has five sections (only ``workers``, ``profiles`` and ``routing`` are r
     server:                       # front server (b1k26.server)
       host: 0.0.0.0
       ports: "8000-8049"          # int, "8000", "8000-8049", "8000,8002", or a list of ints/ranges
-      health_requires_warm: true  # /healthz is 503 until the default profile's worker is warm
+      health_requires_warm: true  # /healthz is 503 until every routed worker has finished its first start attempt
+                                  # (ready, or failed and handed to background retries) and the default one is ready
     engine:                       # planning (b1k26.engine); every key is optional
       plan_timeout_s: 120         # one plan request (queueing + inference); on timeout the step gets a hold action
+      restart_wait_s: 420         # a query whose worker is (re)starting waits this long for it before holding;
+                                  # restart_wait_s + plan_timeout_s must stay under the 2026/eval 600 s query cap
       max_batch: 8                # micro-batch size per worker request (a worker may lower it)
       batch_wait_ms: 5            # how long an idle worker waits for more plan requests before sending a batch
       gripper_rules: null         # path to a gripper_rules.json (default: the packaged one)
-      fallback_to_default: true   # use the default profile when a routed profile's worker failed for good
+      fallback_to_default: true   # use the default profile while a routed profile's worker is down (backoff/failed)
     workers:
       comet_pt50:
         endpoint: ws://127.0.0.1:9101   # connect to this worker, and/or
         launch: ["{python}", "-m", "b1k26.worker", "--backend", "fake_sine", "--port", "{port}"]
-        port: 9101                       # required with launch unless the endpoint gives it
-        startup_timeout_s: 900
+        port: 9101                       # required with launch unless the endpoint gives it; if it is taken
+                                         # (another server on this host), a free loopback port is used instead
+        startup_timeout_s: 900           # no /healthz answer by then -> relaunch; still loading (503) -> up to 3x
         env: {CUDA_VISIBLE_DEVICES: "0"} # extra environment for the launched process
         cwd: null
-        max_restarts: 3                  # relaunch a launched worker that died, at most this many times ...
-        restart_window_s: 3600           # ... within any window of this length (older restarts are forgotten)
+        max_restarts: 3                  # immediate relaunches of a worker that died, at most this many ...
+        restart_window_s: 3600           # ... within any window of this length; beyond that, relaunch with backoff
+        restart_backoff_s: 10            # first backoff delay, doubled after each failed relaunch ...
+        restart_backoff_max_s: 300       # ... up to this (a launched worker is never given up, except on a
+                                         # configuration error: missing program, worker exit status 2)
         max_batch: null                  # per-worker override of engine.max_batch
     profiles:
       comet:
@@ -39,12 +46,14 @@ A config has five sections (only ``workers``, ``profiles`` and ``routing`` are r
       per_task: {turning_on_radio: comet, 12: comet}   # task name or id -> profile
 
 In ``launch`` argv entries, ``{python}`` expands to the front server's interpreter and ``{port}`` to the worker's
-port. Unknown keys anywhere are errors, so a typo never silently falls back to a default.
+port (a literal ``--port N`` equal to the worker port is treated like ``--port {port}``, so the port can move).
+Unknown keys anywhere are errors, so a typo never silently falls back to a default.
 """
 
 from __future__ import annotations
 
 import dataclasses
+import ipaddress
 import os
 import sys
 from dataclasses import dataclass, field
@@ -60,6 +69,7 @@ PROMPT_STYLES = ("comet2025", "instruction", "snake_case")
 CAMERA_ROLES = ("head", "left_wrist", "right_wrist")
 RESIZE_METHODS = ("bilinear", "nearest", "lanczos", "bicubic")
 MAX_PORTS = 1024
+QUERY_CAP_S = 600.0  # 2026/eval POLICY_RESPONSE_TIMEOUT: one query must be answered within this
 
 
 class ConfigError(ValueError):
@@ -79,6 +89,7 @@ class ServerConfig:
 @dataclass
 class EngineConfig:
     plan_timeout_s: float = 120.0
+    restart_wait_s: float = 420.0
     max_batch: int = 8
     batch_wait_ms: float = 5.0
     gripper_rules: str | None = None
@@ -94,13 +105,42 @@ class WorkerConfig:
     startup_timeout_s: float = 900.0
     env: dict[str, str] = field(default_factory=dict)
     cwd: str | None = None
-    max_restarts: int = 3  # restarts allowed within any restart_window_s (start-up relaunches count too)
+    max_restarts: int = 3  # immediate relaunches allowed within any restart_window_s (start-up relaunches count)
     restart_window_s: float = 3600.0
+    restart_backoff_s: float = 10.0  # beyond max_restarts: relaunch after this delay, doubled each time ...
+    restart_backoff_max_s: float = 300.0  # ... up to this
     max_batch: int | None = None
+    # launch argv with "{port}" kept as a placeholder (also where a literal --port value was), for relocated()
+    launch_template: list[str] | None = None
 
     @property
     def host(self) -> str:
         return urlparse(self.endpoint).hostname or "127.0.0.1"
+
+    @property
+    def relocatable(self) -> bool:
+        """Whether the launched worker can be moved to another port: it listens on loopback and its argv carries
+        the port (``{port}`` or ``--port N``)."""
+        if not self.launch or not self.launch_template or not any("{port}" in a for a in self.launch_template):
+            return False
+        host = self.host
+        if host == "localhost":
+            return True
+        try:
+            return ipaddress.ip_address(host).is_loopback
+        except ValueError:
+            return False
+
+    def relocated(self, port: int) -> "WorkerConfig":
+        """A copy of this launched worker's config on another port (argv, port and endpoint updated)."""
+        if not self.relocatable or self.launch_template is None:
+            raise ValueError(f"worker {self.name} cannot be relocated")
+        u = urlparse(self.endpoint)
+        host = u.hostname or "127.0.0.1"
+        netloc = f"[{host}]:{port}" if ":" in host else f"{host}:{port}"
+        endpoint = u._replace(netloc=netloc).geturl()
+        launch = [a.replace("{port}", str(port)) for a in self.launch_template]
+        return dataclasses.replace(self, endpoint=endpoint, launch=launch, port=int(port))
 
     @property
     def endpoint_port(self) -> int:
@@ -261,6 +301,15 @@ def _expand_argv(argv: list[str], port: int | None) -> list[str]:
     return out
 
 
+def _launch_template(argv: list[str], port: int) -> list[str]:
+    """argv with {python} expanded and the port kept as "{port}" (a literal value after --port included)."""
+    out = [a.replace("{python}", sys.executable) for a in argv]
+    for i in range(1, len(out)):
+        if out[i - 1] == "--port" and out[i] == str(port):
+            out[i] = "{port}"
+    return out
+
+
 def _parse_server(raw: Any) -> ServerConfig:
     raw = raw or {}
     _check_keys("server", raw, ("host", "ports", "health_requires_warm"))
@@ -276,10 +325,17 @@ def _parse_server(raw: Any) -> ServerConfig:
 
 def _parse_engine(raw: Any, base_dir: str | None) -> EngineConfig:
     raw = raw or {}
-    _check_keys("engine", raw, ("plan_timeout_s", "max_batch", "batch_wait_ms", "gripper_rules", "fallback_to_default"))
+    _check_keys("engine", raw, ("plan_timeout_s", "restart_wait_s", "max_batch", "batch_wait_ms", "gripper_rules",
+                                "fallback_to_default"))
     cfg = EngineConfig()
     if "plan_timeout_s" in raw:
         cfg.plan_timeout_s = _float("engine.plan_timeout_s", raw["plan_timeout_s"], 0.0, lo_inclusive=False)
+    if "restart_wait_s" in raw:
+        cfg.restart_wait_s = _float("engine.restart_wait_s", raw["restart_wait_s"], 0.0)
+    if cfg.restart_wait_s + cfg.plan_timeout_s >= QUERY_CAP_S - 10:
+        raise ConfigError(f"engine: restart_wait_s ({cfg.restart_wait_s:g}) + plan_timeout_s ({cfg.plan_timeout_s:g}) "
+                          f"must stay below {QUERY_CAP_S - 10:g} s: 2026/eval fails a rollout whose query takes "
+                          f"{QUERY_CAP_S:g} s")
     if "max_batch" in raw:
         cfg.max_batch = _int("engine.max_batch", raw["max_batch"], 1, 256)
     if "batch_wait_ms" in raw:
@@ -311,7 +367,7 @@ def _parse_endpoint(where: str, value: Any) -> tuple[str, int]:
 def _parse_worker(name: str, raw: Any) -> WorkerConfig:
     where = f"workers.{name}"
     _check_keys(where, raw, ("endpoint", "launch", "port", "startup_timeout_s", "env", "cwd", "max_restarts",
-                             "restart_window_s", "max_batch"))
+                             "restart_window_s", "restart_backoff_s", "restart_backoff_max_s", "max_batch"))
     endpoint = None
     ep_port = None
     if raw.get("endpoint") is not None:
@@ -324,6 +380,7 @@ def _parse_worker(name: str, raw: Any) -> WorkerConfig:
     port = port if port is not None else ep_port
 
     launch = None
+    template = None
     if raw.get("launch") is not None:
         argv = raw["launch"]
         if not isinstance(argv, list) or not argv or not all(isinstance(a, (str, int, float)) for a in argv):
@@ -331,6 +388,7 @@ def _parse_worker(name: str, raw: Any) -> WorkerConfig:
         if port is None:
             raise ConfigError(f"{where}: launch needs a port (set `port:` or an `endpoint:` with a port)")
         launch = _expand_argv([str(a) for a in argv], port)
+        template = _launch_template([str(a) for a in argv], port)
         if "--port" in launch:
             i = launch.index("--port")
             if i + 1 < len(launch) and launch[i + 1].isdigit() and int(launch[i + 1]) != port:
@@ -340,7 +398,7 @@ def _parse_worker(name: str, raw: Any) -> WorkerConfig:
             raise ConfigError(f"{where}: needs `endpoint:` or `launch:` + `port:`")
         endpoint = f"ws://127.0.0.1:{port}"
 
-    cfg = WorkerConfig(name=name, endpoint=endpoint, launch=launch, port=port)
+    cfg = WorkerConfig(name=name, endpoint=endpoint, launch=launch, port=port, launch_template=template)
     if "startup_timeout_s" in raw:
         cfg.startup_timeout_s = _float(f"{where}.startup_timeout_s", raw["startup_timeout_s"], 0.0, lo_inclusive=False)
     if raw.get("env") is not None:
@@ -354,6 +412,15 @@ def _parse_worker(name: str, raw: Any) -> WorkerConfig:
         cfg.max_restarts = _int(f"{where}.max_restarts", raw["max_restarts"], 0, 100)
     if "restart_window_s" in raw:
         cfg.restart_window_s = _float(f"{where}.restart_window_s", raw["restart_window_s"], 0.0, lo_inclusive=False)
+    if "restart_backoff_s" in raw:
+        cfg.restart_backoff_s = _float(f"{where}.restart_backoff_s", raw["restart_backoff_s"], 0.0,
+                                       lo_inclusive=False)
+    if "restart_backoff_max_s" in raw:
+        cfg.restart_backoff_max_s = _float(f"{where}.restart_backoff_max_s", raw["restart_backoff_max_s"], 0.0,
+                                           lo_inclusive=False)
+    if cfg.restart_backoff_max_s < cfg.restart_backoff_s:
+        raise ConfigError(f"{where}: restart_backoff_max_s ({cfg.restart_backoff_max_s:g}) < restart_backoff_s "
+                          f"({cfg.restart_backoff_s:g})")
     if raw.get("max_batch") is not None:
         cfg.max_batch = _int(f"{where}.max_batch", raw["max_batch"], 1, 256)
     return cfg

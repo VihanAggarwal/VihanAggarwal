@@ -1,10 +1,16 @@
 #!/usr/bin/env python3
 """Download candidate checkpoints (params + assets only; optimizer state is skipped).
 
-    python scripts/download_checkpoints.py --dest /workspace/ckpt comet_pt50 gr00t_multitask hoshipu_100t
-    python scripts/download_checkpoints.py --dest /workspace/ckpt jackliu_meta100 --step 139999
-    python scripts/download_checkpoints.py --dest /workspace/ckpt jackliu_sft --tasks 0-99
+    python scripts/download_checkpoints.py --dest /ckpt comet_pt50 gr00t_multitask hoshipu_100t
+    python scripts/download_checkpoints.py --dest /ckpt jackliu_meta100 --step 139999
+    python scripts/download_checkpoints.py --dest /ckpt jackliu_sft --tasks 0-99
     python scripts/download_checkpoints.py --list
+
+Each candidate goes to <dest>/<name>/ with the repo's own layout below it, e.g. /ckpt/comet_pt50/pi05-b1kpt50-cs32,
+/ckpt/jackliu_meta100/meta100-1epoch/step139999, /ckpt/rlc_2025/checkpoint_1, /ckpt/hoshipu_100t/ckpt-4000000,
+/ckpt/gr00t_multitask/checkpoint-238000: the paths the example configs use (and docker/build.sh's /ckpt/<basename of
+--ckpt> convention, with --ckpt /ckpt/<name>). Uses huggingface_hub.snapshot_download(allow_patterns=[...]), which
+behaves the same on every huggingface_hub version (the `hf download --include` CLI does not).
 
 Gated repos (JackLiu0406/meta-SFT-checkpoints) need HF_TOKEN from an account whose access request was approved.
 Sizes are approximate (params only).
@@ -68,7 +74,7 @@ def jackliu_sft_folders(api, task_ids: list[int]) -> dict[int, str]:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("names", nargs="*")
-    ap.add_argument("--dest", default="/workspace/ckpt")
+    ap.add_argument("--dest", default="/ckpt")
     ap.add_argument("--step", default=None, help="checkpoint step for repos with several snapshots")
     ap.add_argument("--tasks", default="0-99", help="task ids for jackliu_sft")
     ap.add_argument("--list", action="store_true")
@@ -77,7 +83,11 @@ def main() -> int:
         for k, (repo, _, size, note) in CANDIDATES.items():
             print(f"{k:<18} {repo:<42} {size:>15}  {note}")
         return 0
-    from huggingface_hub import HfApi, snapshot_download
+    try:
+        from huggingface_hub import HfApi, snapshot_download
+    except ImportError:
+        print("huggingface_hub is not installed in this Python: pip install huggingface_hub", file=sys.stderr)
+        return 2
 
     api = HfApi(token=os.environ.get("HF_TOKEN"))
     os.makedirs(args.dest, exist_ok=True)

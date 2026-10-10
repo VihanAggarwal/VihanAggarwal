@@ -73,7 +73,7 @@ Both openpi backends share `b1k26.backends.openpi_b1k.OpenPIBackendBase`.
 | `batched` | `false` | one padded `sample_actions` call per micro-batch instead of a loop (see below) |
 | `max_batch` | 8 | largest compiled batch; buckets `1, 2, 4, ..., max_batch` |
 | `default_prompt_mode` | `comet2025` (comet) / `snake_case` (b1k) | used only when an item arrives without a prompt |
-| `mem_fraction` | unset | sets `XLA_PYTHON_CLIENT_MEM_FRACTION` before JAX is imported |
+| `mem_fraction` | unset | sets `XLA_PYTHON_CLIENT_MEM_FRACTION` before JAX is imported. A node-level `B1K26_MEM_FRACTION` (set to 0.40 by `scripts/restart_server.sh` on self-eval nodes, where the simulator shares the GPU) overrides it. With `XLA_PYTHON_CLIENT_PREALLOCATE=false` it is a ceiling, but the allocator can grow to about 2x live use up to it. |
 | `warmup_task_id` | 0 | task used for the warmup dummy inference |
 | `repo_id` (b1k only) | config's | like `serve_b1k.py --repo-id`; the asset id defaults to it |
 | `gripper_state` (b1k only) | `auto` | `width`, `pm1`, or `auto` (decided from the norm stats); see the openpi_b1k section |
@@ -128,12 +128,25 @@ Both openpi backends share `b1k26.backends.openpi_b1k.OpenPIBackendBase`.
 
 BEHAVIOR-1K/OmniGibson is not installed in these envs.
 
+**Files fetched at load (offline serving).** pi0.5 model transforms build a `PaligemmaTokenizer`, which reads
+`gs://big_vision/paligemma_tokenizer.model` from `$OPENPI_DATA_HOME` (default `~/.cache/openpi`) and downloads it
+there if it is missing (anonymous GCS, needs network and `gcsfs`). The Docker image bakes it into
+`OPENPI_DATA_HOME=/opt/openpi_data` (mode 0777: openpi chmods the cache dir otherwise, which fails for a non-root UID)
+and checks every openpi env offline at build time (`docker/check_offline.sh`, `RUN --network=none`). On a bare node,
+the first load downloads it into `~/.cache/openpi`.
+
+**Checkpoints.** `python scripts/download_checkpoints.py --dest /ckpt <name> ...` (`--list` shows the names) puts
+each candidate under `/ckpt/<name>/` with the repo's layout below it; the example configs use exactly those paths. It
+calls `huggingface_hub.snapshot_download(allow_patterns=[...])`, which behaves the same on every huggingface_hub
+version. Avoid `hf download --include A B` with several patterns: hf >= 1.0 takes only one value per `--include`
+(the second pattern becomes a file name and fails), and hf < 1.0 keeps only the last of repeated `--include` flags.
+
 Smoke test on the GPU node:
 
 ```bash
 DIR/venv/bin/python - <<'EOF'
 from b1k26.backends.base import create_backend
-b = create_backend("openpi_comet", checkpoint="/ckpt/openpi_comet/pi05-b1kpt50-cs32", num_steps=10)
+b = create_backend("openpi_comet", checkpoint="/ckpt/comet_pt50/pi05-b1kpt50-cs32", num_steps=10)
 print(b.info(), "warmup ms", b.warmup())
 EOF
 ```
@@ -149,13 +162,11 @@ Its pins: jax[cuda12] 0.5.3, flax 0.10.2, orbax 0.11.13, torch 2.7.1, transforme
 ### Checkpoints (HF `sunshk/openpi_comet`, JAX orbax, ~12 GB each)
 
 ```bash
-hf download sunshk/openpi_comet --include "pi05-b1kpt50-cs32/*" --local-dir /ckpt/openpi_comet   # tasks 0-49
-hf download sunshk/openpi_comet --include "pi05-b1kpt12-cs32/*" --local-dir /ckpt/openpi_comet   # 12 tasks
-# checkpoint dir = /ckpt/openpi_comet/pi05-b1kpt50-cs32  (params/, assets/, _CHECKPOINT_METADATA)
+python scripts/download_checkpoints.py --dest /ckpt comet_pt50   # tasks 0-49 -> /ckpt/comet_pt50/pi05-b1kpt50-cs32
+python scripts/download_checkpoints.py --dest /ckpt comet_pt12   # 12 tasks  -> /ckpt/comet_pt12/pi05-b1kpt12-cs32
+# checkpoint dir = /ckpt/comet_pt50/pi05-b1kpt50-cs32  (params/, assets/, _CHECKPOINT_METADATA)
 ```
 
-- Use the new `hf` CLI. The legacy `huggingface-cli download` keeps only the last of several repeated
-  `--include` flags.
 - The same names are also published as `sunshk/openpi_comet_pt50` and `sunshk/openpi_comet_pt12`, one per repo
   (not checked to be byte-identical; the layout above was read from the `sunshk/openpi_comet` tree).
 - PyTorch conversions: `sunshk/openpi_comet_pytorch` and `RLinf/RLinf-Pi05-BEHAVIOR-1K-PT50-CS32` contain
@@ -229,9 +240,9 @@ unzip pi05TurningOnRadio.zip 'pi05_turn_on_the_radio/params/*' 'pi05_turn_on_the
 **Hoshipu 100-task pi0.5** (public, no card, never evaluated; JAX orbax fp32, 12.4 GB per step):
 
 ```bash
-hf download Hoshipu/pi05-b1k100t-2026-lr2.5e5 --include "ckpt-4000000/*" --local-dir /ckpt/hoshipu-100t
+python scripts/download_checkpoints.py --dest /ckpt hoshipu_100t   # [--step 3000000]
 # also: ckpt-950000, ckpt-2000000, ckpt-3000000; continuation repo Hoshipu/pi05-b1k100t-2026-4mto5m-lr2.5e5
-# (ckpt-27000, ckpt-38000, ckpt-169000). checkpoint dir = /ckpt/hoshipu-100t/ckpt-4000000
+# (ckpt-27000, ckpt-38000, ckpt-169000). checkpoint dir = /ckpt/hoshipu_100t/ckpt-4000000
 ```
 
 - The norm stats are at `<ckpt>/assets/norm_stats.json`, directly under `assets/`, so use
@@ -337,9 +348,9 @@ Two forks ship a package named `b1k` with different stage tables. They need sepa
 ```bash
 scripts/envs/pibehavior.sh --prefix /opt/envs/pibehavior-2025 --fork rlc2025
 scripts/envs/pibehavior.sh --prefix /opt/envs/pibehavior-2026 --fork jackliu2026
-hf download IliaLarchenko/behavior_submission --local-dir /ckpt/rlc     # checkpoint_{1..4}/{params,assets}, ~51 GB
-hf download JackLiu0406/meta-SFT-checkpoints --include "meta100-1epoch/step139999/params/*" \
-    "meta100-1epoch/step139999/assets/*" --local-dir /ckpt/meta-sft     # request access on HF first
+python scripts/download_checkpoints.py --dest /ckpt rlc_2025   # /ckpt/rlc_2025/checkpoint_{1..4}/{params,assets}, ~51 GB
+HF_TOKEN=... python scripts/download_checkpoints.py --dest /ckpt jackliu_meta100   # gated: request access on HF first
+# -> /ckpt/jackliu_meta100/meta100-1epoch/step139999/{params,assets} (+ norm-stats-fixed/); --step 69999 for the other
 ```
 
 - **`rlc2025` env.** The repo has no lockfile. The env is synced from its openpi submodule's `uv.lock` (jax 0.5.3,
@@ -504,7 +515,7 @@ directly; the fork's websocket server and its temporal-ensemble wrapper are not 
 
 ```bash
 HF_TOKEN=... scripts/envs/gr00t.sh --prefix /opt/envs/gr00t --download-backbone   # add --no-flash-attn on Turing-only nodes
-hf download kmy17518/gr00t-n1.7-b1k-multitask --include "checkpoint-238000/*" --local-dir /ckpt/gr00t-multitask
+python scripts/download_checkpoints.py --dest /ckpt gr00t_multitask   # -> /ckpt/gr00t_multitask/checkpoint-238000
 gdown 1OXNm3SPLvWOSJR1e8In6xHMHxOYDp789 -O radio.zip && unzip radio.zip -d /ckpt/gr00t-radio
 # radio checkpoint dir = /ckpt/gr00t-radio/turning_on_radio_GR00T-checkpoint-150000
 ```
@@ -512,6 +523,11 @@ gdown 1OXNm3SPLvWOSJR1e8In6xHMHxOYDp789 -O radio.zip && unzip radio.zip -d /ckpt
 - **Gated backbone.** `Gr00tN1d7` builds its backbone and processor from `nvidia/Cosmos-Reason2-2B` at **every**
   load. That repo is gated: accept the license and set `HF_TOKEN` before `--download-backbone`. Then serve with
   `HF_HUB_OFFLINE=1`; the example config sets it.
+- **Docker.** `docker/build.sh` with `gr00t` in `--backends` requires `HF_TOKEN`, passes it as the BuildKit secret
+  `hf_token` (not stored in the image) and builds the env with `--download-backbone` (`--gr00t-env-args` overrides,
+  e.g. to add `--no-flash-attn`). The Dockerfile turns on `HF_HUB_OFFLINE` only after the env install and checks
+  offline that the backbone is in `/opt/hf`. The image then contains the gated weights: check the Cosmos license
+  before making it public; otherwise give the organizers pull credentials.
 - **Checkpoints.** Both use embodiment `NEW_EMBODIMENT` and carry the R1Pro modality config in
   `processor_config.json`; the backend validates it at load.
   - `kmy17518/gr00t-n1.7-b1k-multitask`: all 100 tasks. Its LR was never annealed, so screen several late snapshots.

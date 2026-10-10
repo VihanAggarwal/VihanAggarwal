@@ -5,7 +5,7 @@
 #
 # Setup (docs/BACKENDS.md#openpi_b1k):
 #   scripts/envs/openpi_b1k.sh --prefix /opt/envs/openpi_b1k
-#   hf download Hoshipu/pi05-b1k100t-2026-lr2.5e5 --include "ckpt-4000000/*" --local-dir /ckpt/hoshipu-100t
+#   python scripts/download_checkpoints.py --dest /ckpt hoshipu_100t   (-> /ckpt/hoshipu_100t/ckpt-4000000)
 #   gdown 1KojwNUz0HVwU3Ww2SVh3NKt-4asuI3y2 -O pi05TurningOnRadio.zip && unzip pi05TurningOnRadio.zip -d /ckpt/radio
 #
 # Worker kwargs are passed as one JSON object (--backend-kwargs) to
@@ -25,7 +25,7 @@ workers:
       - --backend
       - openpi_b1k
       - --checkpoint
-      - /ckpt/hoshipu-100t/ckpt-4000000
+      - /ckpt/hoshipu_100t/ckpt-4000000
       - --port
       - "9201"
       - --backend-kwargs

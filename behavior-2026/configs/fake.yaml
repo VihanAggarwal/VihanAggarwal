@@ -21,7 +21,8 @@ workers:
     launch: ["{python}", "-m", "b1k26.worker", "--backend", "fake_sine", "--port", "{port}",
              "--backend-arg", "horizon=32", "--backend-arg", "period=48"]
     startup_timeout_s: 60
-    max_restarts: 3           # restarts within any restart_window_s; a crash loop gives up, a rare crash never does
+    max_restarts: 3           # immediate restarts within any restart_window_s; beyond that a crash loop is relaunched
+                              # with backoff (restart_backoff_s 10 doubling to restart_backoff_max_s 300)
     restart_window_s: 3600
 
 profiles:

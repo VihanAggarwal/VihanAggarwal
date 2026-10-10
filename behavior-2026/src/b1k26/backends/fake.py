@@ -2,7 +2,8 @@
 
 - ``HoldBackend`` (``fake_hold``): every chunk holds the current pose (``obs.hold_action``).
 - ``SineBackend`` (``fake_sine``): small smooth motion around the current pose. Optional stage logits,
-  inpainting prefix, simulated latency and injected failures.
+  inpainting prefix, simulated latency and injected failures (per task, or at load while a file exists:
+  ``fail_load_if_exists``, a transient load failure for the supervisor tests).
 - ``ReplayBackend`` (``fake_replay``): replays an ``.npy`` action file window by window.
 
 Outputs depend only on the inputs and constructor arguments (``ReplayBackend`` also on its per-task cursor), never
@@ -12,6 +13,7 @@ values so ``b1k26-worker --backend fake_sine --backend-arg period=40`` works.
 
 from __future__ import annotations
 
+import os
 import time
 from typing import Any
 
@@ -49,7 +51,11 @@ class _FakeBase(Backend):
         slow_task_ids: list[int] | None = None,
         slow_ms: float = 0.0,
         checkpoint: str | None = None,
+        fail_load_if_exists: str | None = None,
     ):
+        if fail_load_if_exists and os.path.exists(fail_load_if_exists):
+            # RuntimeError: a transient load failure (worker exit status 3), which the front server retries.
+            raise RuntimeError(f"injected load failure ({fail_load_if_exists} exists)")
         if int(horizon) < 1:
             raise ValueError("horizon must be >= 1")
         self.horizon = int(horizon)
